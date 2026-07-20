@@ -12,6 +12,11 @@ export class PeelState {
   constructor(maxPeel) {
     this.maxPeel = maxPeel;
     this.dir = [1, 0];
+    // 插值用的原始（未重新归一化）向量：dir 每帧都会被归一化为单位向量对外暴露，
+    // 若拿归一化后的 dir 当下一帧插值的起点，方向与目标恰好反向（180°）时衰减信息
+    // 会在归一化时丢失，导致 lerp 永远收敛回原方向、卡死不动。这里单独维护一份
+    // 不归一化的向量承接跨帧的插值进度，只在算 dir 时才归一化。
+    this._dirRaw = [1, 0];
     this.targetDir = [1, 0];
     this.peel = 0;
     this.target = 0;
@@ -50,8 +55,9 @@ export class PeelState {
 
   step() {
     // 方向平滑：先线性插值再归一化，保证始终是单位向量
-    const nx = this.dir[0] + (this.targetDir[0] - this.dir[0]) * LERP_DIR;
-    const ny = this.dir[1] + (this.targetDir[1] - this.dir[1]) * LERP_DIR;
+    const nx = this._dirRaw[0] + (this.targetDir[0] - this._dirRaw[0]) * LERP_DIR;
+    const ny = this._dirRaw[1] + (this.targetDir[1] - this._dirRaw[1]) * LERP_DIR;
+    this._dirRaw = [nx, ny];
     const len = Math.hypot(nx, ny);
     if (len > EPS) this.dir = [nx / len, ny / len];
 
