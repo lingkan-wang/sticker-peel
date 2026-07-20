@@ -70,7 +70,9 @@ export function createScene(container) {
     }
 
     const nextTexture = new THREE.Texture(img);
-    nextTexture.colorSpace = THREE.SRGBColorSpace;
+    // 刻意不设 colorSpace = SRGBColorSpace：那会让 three.js 在采样时注入 sRGB→线性解码，
+    // 而我们用的是自定义 ShaderMaterial，片元着色器没有回写 sRGB 的编码环节，
+    // 结果整张贴图会暗掉一档。canvas 兜底路径同样不设，两条路径保持一致
     nextTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
     nextTexture.needsUpdate = true;
     uniforms.uTex.value.dispose();
