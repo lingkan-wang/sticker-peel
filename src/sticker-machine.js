@@ -84,7 +84,55 @@ export class StickerMachine {
 
   step() {
     if (this.mode === 'peeling') this._stepPeeling();
-    // held / placing 的运动在 Task 2 实现
+    else if (this.mode === 'held') this._stepHeld();
+    else if (this.mode === 'placing') this._stepPlacing();
+  }
+
+  _stepHeld() {
+    // 位置：临界阻尼弹簧追光标。刻意留下滞后 —— 这个滞后就是惯性感的来源
+    const targetX = this.cursor[0] + this.grabOffset[0];
+    const targetY = this.cursor[1] + this.grabOffset[1];
+    this.posVel[0] = (this.posVel[0] + (targetX - this.pos[0]) * FOLLOW_K) * FOLLOW_DAMP;
+    this.posVel[1] = (this.posVel[1] + (targetY - this.pos[1]) * FOLLOW_K) * FOLLOW_DAMP;
+    this.pos[0] += this.posVel[0];
+    this.pos[1] += this.posVel[1];
+
+    // 卷边：收到一个固定的微卷量，不抹平
+    const targetPeel = this._maxPeel() * HELD_CURL;
+    this.peelVel = (this.peelVel + (targetPeel - this.peel) * PLACE_K) * PLACE_DAMP;
+    this.peel += this.peelVel;
+
+    // 倾斜由横向速度导出：往右甩则贴纸尾巴向左摆
+    this.tilt = clamp(-this.posVel[0] * TILT_GAIN, -MAX_TILT, MAX_TILT);
+
+    // 抬离桌面：只驱动阴影
+    this.liftVel = (this.liftVel + (1 - this.lift) * LIFT_K) * LIFT_DAMP;
+    this.lift += this.liftVel;
+  }
+
+  _stepPlacing() {
+    this.peelVel = (this.peelVel + (0 - this.peel) * PLACE_K) * PLACE_DAMP;
+    this.peel += this.peelVel;
+
+    this.liftVel = (this.liftVel + (0 - this.lift) * PLACE_K) * PLACE_DAMP;
+    this.lift += this.liftVel;
+
+    this.tilt += (0 - this.tilt) * TILT_RETURN;
+
+    if (
+      Math.abs(this.peel) < EPS_M && Math.abs(this.peelVel) < EPS_M &&
+      Math.abs(this.lift) < EPS_M && Math.abs(this.liftVel) < EPS_M &&
+      Math.abs(this.tilt) < EPS_M
+    ) {
+      this.peel = 0;
+      this.peelVel = 0;
+      this.lift = 0;
+      this.liftVel = 0;
+      this.tilt = 0;
+      this.mode = 'attached';
+      // 贴纸已经落在新位置：把撕开状态机的锚点世界观一并归零，下次撕开重新取样
+      this.peelState = new PeelState(this._maxPeel());
+    }
   }
 
   _stepPeeling() {
@@ -121,6 +169,24 @@ export class StickerMachine {
   }
 
   get idle() {
-    return this.mode === 'attached' && this.peelState.idle;
+    if (this.mode === 'attached') return this.peelState.idle;
+    if (this.mode === 'held') {
+      // held 也要能进 idle，否则贴纸挂在光标上时 rAF 永远停不下来。
+      // 光标一动 move() 会改 cursor，下一帧弹簧又有活干，主循环负责重新唤醒。
+      const dx = this.cursor[0] + this.grabOffset[0] - this.pos[0];
+      const dy = this.cursor[1] + this.grabOffset[1] - this.pos[1];
+      const peelGap = this._maxPeel() * HELD_CURL - this.peel;
+      return (
+        Math.abs(dx) < EPS_M && Math.abs(dy) < EPS_M &&
+        Math.abs(this.posVel[0]) < EPS_M && Math.abs(this.posVel[1]) < EPS_M &&
+        Math.abs(peelGap) < EPS_M && Math.abs(this.peelVel) < EPS_M &&
+        Math.abs(1 - this.lift) < EPS_M && Math.abs(this.liftVel) < EPS_M
+      );
+    }
+    return false;   // peeling / placing 期间始终在动
   }
+}
+
+function clamp(v, lo, hi) {
+  return Math.min(Math.max(v, lo), hi);
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { StickerMachine, DETACH_THRESHOLD } from '../src/sticker-machine.js';
+import { StickerMachine, DETACH_THRESHOLD, MAX_TILT, HELD_CURL } from '../src/sticker-machine.js';
 
 const W = 420;
 const H = 260;
@@ -152,5 +152,160 @@ describe('StickerMachine 模式迁移', () => {
     // ratio 应当确实越过阈值（而不是被不同方向的上限凑巧撑过去）
     const maxPeelAtTrip = proj(m.dir[0], m.dir[1]) * 2;
     expect(m.peel / maxPeelAtTrip).toBeGreaterThan(DETACH_THRESHOLD);
+  });
+});
+
+/** 撕到脱手并完成那次松手，返回处于 held 且可接受点击的机器 */
+function toHeld(origin = [0, 0]) {
+  const m = new StickerMachine(proj, origin);
+  m.down(origin[0], origin[1]);
+  m.move(origin[0] + 400, origin[1]);
+  for (let i = 0; i < 200; i += 1) m.step();
+  m.up();
+  return m;
+}
+
+describe('StickerMachine held 跟随', () => {
+  it('贴纸带滞后追光标，最终收敛到光标加抓取偏移', () => {
+    const m = toHeld();
+    const offset = [m.grabOffset[0], m.grabOffset[1]];
+    m.move(300, 150);
+    for (let i = 0; i < 400; i += 1) m.step();
+    expect(m.pos[0]).toBeCloseTo(300 + offset[0], 1);
+    expect(m.pos[1]).toBeCloseTo(150 + offset[1], 1);
+  });
+
+  it('跟随是滞后的，不是瞬间吸附', () => {
+    const m = toHeld();
+    const startX = m.pos[0];
+    m.move(600, 0);
+    m.step();
+    // 一帧内只能走过去一小段，远没到位
+    expect(m.pos[0]).toBeGreaterThan(startX);
+    expect(Math.abs(m.pos[0] - (600 + m.grabOffset[0]))).toBeGreaterThan(50);
+  });
+
+  it('横向甩动时产生倾斜，方向与速度相反', () => {
+    const m = toHeld();
+    m.move(600, 0);              // 往 +x 甩
+    for (let i = 0; i < 5; i += 1) m.step();
+    expect(m.posVel[0]).toBeGreaterThan(0);
+    expect(m.tilt).toBeLessThan(0);
+  });
+
+  it('倾斜被夹在 MAX_TILT 以内', () => {
+    const m = toHeld();
+    for (let round = 0; round < 6; round += 1) {
+      m.move(round % 2 === 0 ? 4000 : -4000, 0);   // 疯狂来回甩
+      for (let i = 0; i < 6; i += 1) {
+        m.step();
+        expect(Math.abs(m.tilt)).toBeLessThanOrEqual(MAX_TILT + 1e-9);
+      }
+    }
+  });
+
+  it('held 时保留可见卷边，收敛到 maxPeel * HELD_CURL', () => {
+    const m = toHeld();
+    for (let i = 0; i < 400; i += 1) m.step();
+    const expected = proj(m.dir[0], m.dir[1]) * 2 * HELD_CURL;
+    expect(m.peel).toBeCloseTo(expected, 1);
+    expect(m.peel).toBeGreaterThan(0);
+  });
+
+  it('held 时 lift 升到 1', () => {
+    const m = toHeld();
+    for (let i = 0; i < 400; i += 1) m.step();
+    expect(m.lift).toBeCloseTo(1, 2);
+  });
+
+  it('held 期间方向冻结，光标乱动也不会让卷边在手上转', () => {
+    const m = toHeld();
+    const frozen = [m.dir[0], m.dir[1]];
+    m.move(-500, 400);
+    for (let i = 0; i < 100; i += 1) m.step();
+    expect(m.dir[0]).toBeCloseTo(frozen[0], 6);
+    expect(m.dir[1]).toBeCloseTo(frozen[1], 6);
+  });
+
+  it('held 静止后进入 idle，光标再动则重新唤醒', () => {
+    const m = toHeld();
+    for (let i = 0; i < 800; i += 1) m.step();
+    expect(m.idle).toBe(true);
+    m.move(300, 300);
+    expect(m.idle).toBe(false);
+  });
+});
+
+describe('StickerMachine 贴回与循环', () => {
+  it('松手后点击进入 placing', () => {
+    const m = toHeld();
+    m.down(100, 100);
+    expect(m.mode).toBe('placing');
+  });
+
+  it('placing 时位置冻结在贴纸当前处，不跳到光标', () => {
+    const m = toHeld();
+    for (let i = 0; i < 200; i += 1) m.step();
+    const frozen = [m.pos[0], m.pos[1]];
+    m.down(999, -999);
+    m.step();
+    expect(m.pos[0]).toBeCloseTo(frozen[0], 6);
+    expect(m.pos[1]).toBeCloseTo(frozen[1], 6);
+  });
+
+  it('placing 把 peel / tilt / lift 一起收到 0 并转回 attached', () => {
+    const m = toHeld();
+    for (let i = 0; i < 200; i += 1) m.step();
+    m.down(0, 0);
+    for (let i = 0; i < 1000; i += 1) m.step();
+    expect(m.mode).toBe('attached');
+    expect(m.peel).toBe(0);
+    expect(m.tilt).toBe(0);
+    expect(m.lift).toBe(0);
+    expect(m.idle).toBe(true);
+  });
+
+  it('placing 期间忽略指针输入', () => {
+    const m = toHeld();
+    m.down(0, 0);
+    expect(m.mode).toBe('placing');
+    m.down(50, 50);
+    expect(m.mode).toBe('placing');
+    m.up();
+    expect(m.mode).toBe('placing');
+  });
+
+  it('贴好之后可以从新位置再撕一次，完成完整循环', () => {
+    const m = toHeld();
+    m.move(250, 120);
+    for (let i = 0; i < 400; i += 1) m.step();
+    m.down(250, 120);
+    for (let i = 0; i < 1000; i += 1) m.step();
+    expect(m.mode).toBe('attached');
+    const placedAt = [m.pos[0], m.pos[1]];
+
+    // 从新位置再撕一次
+    m.down(placedAt[0], placedAt[1]);
+    m.move(placedAt[0] + 400, placedAt[1]);
+    for (let i = 0; i < 200; i += 1) m.step();
+    expect(m.mode).toBe('held');
+  });
+
+  it('连续三轮撕下贴回不出异常状态', () => {
+    const m = new StickerMachine(proj, [0, 0]);
+    for (let round = 0; round < 3; round += 1) {
+      const at = [m.pos[0], m.pos[1]];
+      m.down(at[0], at[1]);
+      m.move(at[0] + 400, at[1]);
+      for (let i = 0; i < 200; i += 1) m.step();
+      expect(m.mode).toBe('held');
+      m.up();
+      for (let i = 0; i < 200; i += 1) m.step();
+      m.down(m.pos[0], m.pos[1]);
+      for (let i = 0; i < 1000; i += 1) m.step();
+      expect(m.mode).toBe('attached');
+      expect(m.peel).toBe(0);
+      expect(m.idle).toBe(true);
+    }
   });
 });
