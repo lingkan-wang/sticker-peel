@@ -42,10 +42,12 @@ export function drawSticker(canvas, w, h, dpr) {
 }
 
 /**
- * 贴纸图片素材路径。为 null 时使用 canvas 绘制的 Lingkan 贴纸。
- * 换成异形 die-cut 照片贴纸时，把这里改成 PNG 路径即可（需带 alpha 通道）。
+ * 贴纸图片素材路径。为 null 时回退到 canvas 绘制的 Lingkan 贴纸。
+ * 必须带 alpha 通道：片元着色器靠 alpha < 0.01 discard 切出异形边，
+ * 喂一张不透明的图会渲染成带底色的方块。
+ * assets/sticker-dog.png 由 tools/cutout.py 从原始照片抠出。
  */
-export const STICKER_IMAGE_URL = null;
+export const STICKER_IMAGE_URL = './assets/sticker-dog.png';
 
 /** 加载贴纸图片。失败时 reject，由调用方回退到 canvas 贴纸。 */
 export function loadStickerImage(url) {
