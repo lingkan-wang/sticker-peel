@@ -23,6 +23,23 @@
   #stage.is-dragging,
   #stage.is-holding { cursor: grabbing; }
   #stage canvas { display: block; }
+  .peel-hint {
+    position: absolute;
+    left: 0;
+    top: 0;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: rgba(28, 26, 24, 0.88);
+    color: #fff;
+    font: 500 13px/1 -apple-system, system-ui, "Helvetica Neue", sans-serif;
+    white-space: nowrap;
+    opacity: 0;
+    transition: opacity 150ms ease;
+    /* 必须穿透：否则标签会盖在贴纸上方接走 hover, 命中在标签与贴纸之间反复横跳,
+       表现为文案不停闪烁 */
+    pointer-events: none;
+  }
+  .peel-hint.is-visible { opacity: 1; }
 </style>
 </head>
 <body>

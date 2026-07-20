@@ -176,6 +176,10 @@ export function createScene(container) {
 export function createStickerPeel(container) {
   const scene = createScene(container);
   const machine = new StickerMachine(scene.maxProjection, [0, 0]);
+  const hint = document.createElement('div');
+  hint.className = 'peel-hint';
+  hint.textContent = 'Peel me from any corner';
+  container.appendChild(hint);
   let frame = 0;
   let resizeFrame = 0;
   // 拖拽期间只认第一根手指的 pointerId，避免第二根手指落下时把 anchor 重置，
@@ -234,6 +238,19 @@ export function createStickerPeel(container) {
     hoverZone = machine.mode === 'attached' ? machine.hitZone(x, y) : 'outside';
     container.classList.toggle('zone-edge', hoverZone === 'edge');
     container.classList.toggle('zone-center', hoverZone === 'center');
+    layoutHint();
+  }
+
+  /** 标签跟着贴纸走：水平居中于贴纸，垂直放在贴纸上边缘之上 16px */
+  function layoutHint() {
+    const show = machine.mode === 'attached' && hoverZone !== 'outside';
+    hint.classList.toggle('is-visible', show);
+    if (!show) return;
+    const rect = container.getBoundingClientRect();
+    const halfH = scene.maxProjection(0, 1);
+    hint.style.left = `${rect.width / 2 + machine.pos[0]}px`;
+    hint.style.top = `${rect.height / 2 - machine.pos[1] - halfH - 16}px`;
+    hint.style.transform = 'translate(-50%, -100%)';
   }
 
   function onHoverMove(event) {
@@ -244,6 +261,7 @@ export function createStickerPeel(container) {
   function onHoverLeave() {
     hoverZone = 'outside';
     container.classList.remove('zone-edge', 'zone-center');
+    layoutHint();
   }
 
   function onPointerUp(event) {
@@ -307,6 +325,7 @@ export function createStickerPeel(container) {
     window.removeEventListener('pointercancel', onPointerUp);
     window.removeEventListener('resize', onResize);
     window.removeEventListener('pagehide', onPageHide);
+    if (hint.parentNode) hint.parentNode.removeChild(hint);
     scene.dispose();
   }
 
