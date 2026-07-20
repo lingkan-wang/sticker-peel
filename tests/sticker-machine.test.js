@@ -64,19 +64,35 @@ describe('StickerMachine 模式迁移', () => {
     expect(m.mode).toBe('held');
   });
 
-  it('贴纸不在原点时也能正常撕开脱落，pos 不变、grabOffset 按贴纸而非原点计算', () => {
-    const origin = [200, 100];
+  it('贴纸不在原点时也能正常撕开脱落，pos 不变、grabOffset 按按下点（anchor）而非原点计算', () => {
+    const origin = [200, 20];
     const m = make(origin);
-    // 在贴纸正中央按下：锚点应当是贴纸局部的 (0,0)，往 +x 拖足够远即脱落
-    dragRight(m, origin, 400);
+    // 故意不按在贴纸正中央，而是偏一点按下：这样 anchor 非零，
+    // grabOffset 才能同时验证"按的是哪一点"和"坐标转换有没有做对"。
+    // 拖拽距离特意拉到 600（超过一个 W=420 的跨度）：如果 down() 里漏掉了
+    // "- this.pos" 这个坐标转换，PeelState.anchor 会变成按下点的绝对坐标而不是
+    // 贴纸局部坐标，用真实实现反推验证过——在 origin=[200,20] 下这个偏差仍会让
+    // 撕开量在 6 帧内越过阈值进入 held（不会卡在 peeling 出不来），但算出的
+    // grabOffset 是 [-250,-50] 而不是期望的 [-50,-30]，所以能被下面的断言区分出来
+    const pressOffset = [50, 30];
+    const press = [origin[0] + pressOffset[0], origin[1] + pressOffset[1]];
+    m.down(press[0], press[1]);
+    m.move(press[0] + 600, press[1]);
+    // 只跑到刚脱落那一帧为止：脱落之后 held 的跟随弹簧会立刻开始把 pos 拉向
+    // cursor - anchor，多跑几帧 pos 就不再等于 origin 了（这本身恰恰是新公式
+    // 生效的证据——旧公式下 target 永远等于 pos，多跑多久 pos 都不会挪动）
+    let guard = 0;
+    while (m.mode !== 'held' && guard < 200) {
+      m.step();
+      guard += 1;
+    }
     expect(m.mode).toBe('held');
     // peeling 期间 pos 本身不应该被撕开逻辑改动
     expect(m.pos).toEqual(origin);
-    // grabOffset = pos - cursor，必须按贴纸实际所在的 origin 计算；
-    // 若坐标转换被错误地省略（换算成相对原点），这里会变成 [0,0]-cursor，与期望值不符
-    const cursor = [origin[0] + 400, origin[1]];
-    expect(m.grabOffset).toEqual([origin[0] - cursor[0], origin[1] - cursor[1]]);
-    expect(m.grabOffset).toEqual([-400, 0]);
+    // grabOffset = -anchor，anchor 是 down() 里 (x - this.pos[0], y - this.pos[1]) 算出的
+    // 贴纸局部按下点，此处应等于 pressOffset
+    expect(m.grabOffset).toEqual([-pressOffset[0], -pressOffset[1]]);
+    expect(m.grabOffset).toEqual([-50, -30]);
   });
 
   it('脱落时置 awaitingRelease，随后那次 up 只清标志不贴下', () => {
@@ -233,6 +249,38 @@ describe('StickerMachine held 跟随', () => {
     expect(m.idle).toBe(true);
     m.move(300, 300);
     expect(m.idle).toBe(false);
+  });
+
+  it('回归：按下点脱落后应一直待在光标附近，不能被大幅拖拽甩到几百像素外（浏览器复现：cursor (-350,100) 时贴纸飞出画布左边缘）', () => {
+    const origin = [0, 0];
+    const m = make(origin);
+    // 按在贴纸中心偏一角的位置，而不是正中央
+    const pressOffset = [80, -40];
+    const press = [origin[0] + pressOffset[0], origin[1] + pressOffset[1]];
+    // 用一个很大的拖拽距离（远超脱落阈值）去放大旧公式的 bug：
+    // 旧公式 grabOffset = pos - cursor(脱落瞬间) 会把这段拖拽距离原封不动地
+    // 变成一个永久偏移，越拖越远；新公式只取决于按下点，与拖拽距离无关
+    const detachDistance = 600;
+    m.down(press[0], press[1]);
+    m.move(press[0] + detachDistance, press[1]);
+    for (let i = 0; i < 200; i += 1) m.step();
+    expect(m.mode).toBe('held');
+    m.up();
+
+    const cursor = [-350, 100]; // 浏览器里复现 bug 的那个坐标
+    m.move(cursor[0], cursor[1]);
+    for (let i = 0; i < 800; i += 1) m.step(); // 步进到弹簧收敛
+
+    // 中心应收敛到 cursor - anchor（anchor 就是 pressOffset，因为 pos 从未变化）
+    expect(m.pos[0]).toBeCloseTo(cursor[0] - pressOffset[0], 1);
+    expect(m.pos[1]).toBeCloseTo(cursor[1] - pressOffset[1], 1);
+
+    // 关键区分点：贴纸中心到光标的距离必须被贴纸自身的半跨度约束住，
+    // 不能随拖拽距离（这里是 600px）线性增长。旧公式在这个用例下算出的
+    // grabOffset 长度约 681px，远超半跨度，会让这个断言失败。
+    const dist = Math.hypot(m.pos[0] - cursor[0], m.pos[1] - cursor[1]);
+    const halfSpanX = proj(1, 0); // 贴纸在 x 方向的半跨度（W/2）
+    expect(dist).toBeLessThan(halfSpanX);
   });
 });
 
