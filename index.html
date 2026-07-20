@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lingkan Sticker</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: #e8e6e1;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  #stage {
+    position: fixed;
+    inset: 0;
+    cursor: grab;
+    touch-action: none;
+  }
+  #stage.is-dragging { cursor: grabbing; }
+  #stage canvas { display: block; }
+</style>
+</head>
+<body>
+  <div id="stage"></div>
+  <script type="module">
+    import { createStickerPeel } from './src/main.js';
+    createStickerPeel(document.getElementById('stage'));
+  </script>
+</body>
+</html>

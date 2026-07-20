@@ -482,7 +482,7 @@ export const VERTEX_SHADER = /* glsl */ `
   varying vec2 vUv;
   varying vec3 vNormal;
 
-  const float TWO_PI = 6.28318530718;
+  const float PI = 3.14159265359;
 
   void main() {
     vUv = uv;
@@ -494,11 +494,19 @@ export const VERTEX_SHADER = /* glsl */ `
     float t = uLine - s;          // 顶点越过卷起线多远（>0 即被卷起）
 
     if (t > 0.0) {
-      float theta = min(t / uRadius, TWO_PI);
-      // 绕位于 uLine 处、轴垂直于 uDir 的圆柱卷起
-      pos.xy = pos.xy + uDir * (t - uRadius * sin(theta));
-      pos.z  = uRadius * (1.0 - cos(theta));
-      nrm = vec3(uDir * sin(theta), cos(theta));
+      float theta = t / uRadius;
+      if (theta <= PI) {
+        // 绕位于 uLine 处、轴垂直于 uDir 的圆柱卷起
+        pos.xy = pos.xy + uDir * (t - uRadius * sin(theta));
+        pos.z  = uRadius * (1.0 - cos(theta));
+        nrm = vec3(uDir * sin(theta), cos(theta));
+      } else {
+        // 翻折满 180° 之后, 余下的部分平铺在贴纸上方
+        float ext = t - uRadius * PI;
+        pos.xy = pos.xy + uDir * (t + ext);
+        pos.z  = 2.0 * uRadius;
+        nrm = vec3(0.0, 0.0, -1.0);
+      }
     }
 
     vNormal = normalize(nrm);
