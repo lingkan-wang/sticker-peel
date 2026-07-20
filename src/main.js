@@ -184,8 +184,11 @@ export function createStickerPeel(container) {
   }
 
   function onPointerMove(event) {
-    // held 期间没有按住的手指，但贴纸要跟着光标跑，所以这里不能再要求 pointerId 匹配
-    if (activePointerId !== null && event.pointerId !== activePointerId) return;
+    // held 期间没有按住的手指（activePointerId 为 null），但贴纸要跟着光标跑，
+    // 所以只在这一个模式下放宽 pointerId 校验。其余模式（尤其是松手后仍在回弹的
+    // peeling）必须继续只认发起拖拽的那根手指，否则第二根手指的移动会串进来，
+    // 按第一根手指的锚点改写撕开量
+    if (machine.mode !== 'held' && event.pointerId !== activePointerId) return;
     const [x, y] = toLocal(event);
     machine.move(x, y);
     wake();
