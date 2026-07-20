@@ -282,6 +282,41 @@ describe('StickerMachine held 跟随', () => {
     const halfSpanX = proj(1, 0); // 贴纸在 x 方向的半跨度（W/2）
     expect(dist).toBeLessThan(halfSpanX);
   });
+
+  it('Fix 1 回归：在贴纸范围外按下并脱落，anchor 必须被夹在贴纸半跨度内，收敛后贴纸不能被甩出半对角线之外', () => {
+    // #stage 覆盖整个视口且没有命中测试，用户完全可能按在贴纸外面的空白背景上。
+    // anchor 就是按下点（贴纸局部坐标），未夹住时 grabOffset = -anchor 会远超
+    // 贴纸自身范围，held 收敛后贴纸会被吊在离光标几百像素处。
+    const origin = [0, 0];
+    const m = make(origin);
+    const hx = proj(1, 0); // 210，贴纸半宽
+    const hy = proj(0, 1); // 130，贴纸半高
+    const halfDiagonal = Math.hypot(hx, hy); // ≈ 246.98，贴纸自身的半对角线
+
+    // 按在贴纸范围外很远的地方（贴纸半跨度只有 210×130，这里按在 600,350）
+    const press = [600, 350];
+    m.down(press[0], press[1]);
+    m.move(press[0] - 500, press[1]); // 朝 -x 拖 500px，触发脱落
+    for (let i = 0; i < 200; i += 1) m.step();
+    expect(m.mode).toBe('held');
+    m.up();
+
+    // grabOffset 应该是 -clamp(anchor)，而不是 -anchor 本身：
+    // anchor = press = [600, 350]，clamp 到 [-hx,hx]x[-hy,hy] 后是 [210,130]
+    expect(m.grabOffset).toEqual([-hx, -hy]);
+
+    const cursor = [1000, 1000];
+    m.move(cursor[0], cursor[1]);
+    for (let i = 0; i < 800; i += 1) m.step(); // 步进到弹簧收敛
+
+    // 关键区分点：贴纸中心到光标的距离收敛后不能超过贴纸自身的半对角线。
+    // 不夹住 anchor 的旧实现里，grabOffset = -press = [-600,-350]，
+    // 收敛后中心到光标的距离约为 |press| ≈ 694.6px，远超 halfDiagonal ≈ 247px，
+    // 这个断言在旧实现下必然失败；夹住之后距离最多等于 halfDiagonal（按下点
+    // 恰好夹到贴纸角上时取等号）。
+    const dist = Math.hypot(m.pos[0] - cursor[0], m.pos[1] - cursor[1]);
+    expect(dist).toBeLessThanOrEqual(halfDiagonal + 1e-6);
+  });
 });
 
 describe('StickerMachine 贴回与循环', () => {
@@ -354,6 +389,41 @@ describe('StickerMachine 贴回与循环', () => {
       expect(m.mode).toBe('attached');
       expect(m.peel).toBe(0);
       expect(m.idle).toBe(true);
+    }
+  });
+
+  it('Fix 2 回归：贴回之后沿同一方向再撕一次，方向不应先跳向 +x 再转回来', () => {
+    // _stepPlacing 收敛时会 new 一个全新的 PeelState，它的 dir 默认是 [1,0]。
+    // 如果不把 this.dir（上一次撕开冻结下来的方向）搬过去，下一次撕开的第一帧
+    // 就会看到 dir 从 [1,0] 开始，往真实拖拽方向慢慢转，视觉上像是"先甩向右
+    // 再转回来"。这里用竖直向下（非 +x）验证：正确实现下 dir[0] 应该从一开始
+    // 就贴着 0，不会跳向 1 附近。
+    const m = new StickerMachine(proj, [0, 0]);
+
+    // 第一次撕开：朝正下方拖（y 轴向上，所以往下是 -y）
+    m.down(0, 0);
+    m.move(0, -400); // 400 > maxPeel(0,-1)*0.75 = 260*0.75 = 195，会脱落
+    for (let i = 0; i < 200; i += 1) m.step();
+    expect(m.mode).toBe('held');
+    m.up();
+
+    // 点击贴回（awaitingRelease 已清，down 会走 _beginPlacing）
+    m.down(m.pos[0], m.pos[1]);
+    for (let i = 0; i < 1000; i += 1) m.step();
+    expect(m.mode).toBe('attached');
+    const placedAt = [m.pos[0], m.pos[1]];
+
+    // 第二次撕开：同样朝正下方拖
+    m.down(placedAt[0], placedAt[1]);
+    m.move(placedAt[0], placedAt[1] - 400);
+    expect(m.mode).toBe('peeling');
+
+    // 关键区分点：未修复版本这里 dir[0] 第一帧就会跳到 ~0.97（默认方向 [1,0]
+    // 正在往 [0,-1] 慢慢转），修复后 dir 从旧方向 [0,-1] 原样带过来，
+    // targetDir 又恰好也是 [0,-1]，dir[0] 应该始终贴着 0，不会有任何一帧超过 0.5
+    for (let i = 0; i < 6; i += 1) {
+      m.step();
+      expect(Math.abs(m.dir[0])).toBeLessThan(0.5);
     }
   });
 });

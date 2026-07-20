@@ -55,9 +55,10 @@ export class StickerMachine {
     this.cursor = [x, y];
     if (this.mode === 'attached') {
       this.mode = 'peeling';
-      // 当前 pos 在整段撕开过程中不变，PeelState 内部只用 move/down 点之间的差值，
-      // 所以这个减法此刻算出来会被抵消、观察不到效果；保留它是因为它才是正确的坐标契约——
-      // 一旦 PeelState 改成依赖绝对坐标，或者 pos 在 peeling 期间开始变化，这里不减就会静默出错。
+      // 这个减法是有实际效果的：算出来的贴纸局部坐标会被存进 PeelState.anchor，
+      // 而 _detach() 正是靠 anchor 算 grabOffset。删掉它 anchor 会变成按下点的绝对坐标，
+      // 贴纸会被甩到几百像素外。move() 里同名的减法才是纯坐标契约、可抵消不影响结果——
+      // 两处形似但不等价，不要因为对称就一起删。
       this.peelState.down(x - this.pos[0], y - this.pos[1]);
       return;
     }
@@ -89,7 +90,8 @@ export class StickerMachine {
   }
 
   _stepHeld() {
-    // 位置：临界阻尼弹簧追光标。刻意留下滞后 —— 这个滞后就是惯性感的来源
+    // 位置：欠阻尼弹簧追光标。特征值是模为 sqrt(FOLLOW_DAMP) 的复数，会带一点
+    // 过冲再收敛——这个过冲加滞后就是摆动感/惯性感的来源，是故意的，不是没调好
     const targetX = this.cursor[0] + this.grabOffset[0];
     const targetY = this.cursor[1] + this.grabOffset[1];
     this.posVel[0] = (this.posVel[0] + (targetX - this.pos[0]) * FOLLOW_K) * FOLLOW_DAMP;
@@ -132,6 +134,10 @@ export class StickerMachine {
       this.mode = 'attached';
       // 贴纸已经落在新位置：把撕开状态机的锚点世界观一并归零，下次撕开重新取样
       this.peelState = new PeelState(this._maxPeel());
+      // 沿用当前方向：新实例的 dir 默认是 [1,0]，不带过去的话下一次撕开会先
+      // 朝 +x 猛地一跳再慢慢转回来，而 peel 的爬升比方向的 slerp 更快
+      this.peelState.dir = [this.dir[0], this.dir[1]];
+      this.peelState.targetDir = [this.dir[0], this.dir[1]];
     }
   }
 
@@ -158,7 +164,16 @@ export class StickerMachine {
     // 抓取点就是最初按下的那个点：捏住贴纸哪里, 哪里就该待在指尖下。
     // 若改用脱落瞬间的 pos - cursor, 由于脱落必然发生在拖出 75% 跨度之后,
     // 贴纸会被永久吊在离光标三四百像素处, 稍一移动就飞出视口
-    this.grabOffset = [-this.peelState.anchor[0], -this.peelState.anchor[1]];
+    //
+    // anchor 是用户按下的那一点，但 #stage 覆盖整个视口且没有命中测试，
+    // 在贴纸外面按下时 anchor 会远超贴纸自身范围。不夹住的话贴纸会被吊在
+    // 离光标几百像素处，一路推出视口且无法找回
+    const hx = this.maxProjectionFor(1, 0);
+    const hy = this.maxProjectionFor(0, 1);
+    this.grabOffset = [
+      -clamp(this.peelState.anchor[0], -hx, hx),
+      -clamp(this.peelState.anchor[1], -hy, hy),
+    ];
     this.posVel = [0, 0];
     this.peelVel = 0;
     this.liftVel = 0;
