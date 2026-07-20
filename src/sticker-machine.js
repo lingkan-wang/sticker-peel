@@ -2,12 +2,25 @@ import { PeelState } from './peel-state.js';
 
 export const DETACH_THRESHOLD = 0.75;
 export const HELD_CURL = 0.18;
-export const FOLLOW_K = 0.18;
-export const FOLLOW_DAMP = 0.82;
-export const TILT_GAIN = 0.06;
+
+// held 期间的三组弹簧都按临界阻尼配。这类离散弹簧 v=(v+(T-x)K)·D; x+=v 的
+// 状态矩阵行列式恒为 D、迹为 1+D-DK，判别式为零（即临界阻尼、不过冲）时
+//   K = (1-√D)² / D
+// 收敛速度由 √D 决定：每帧衰减 √D，衰到 1% 约需 ln(0.01)/ln(√D) 帧。
+// 先前这几个 K 都比临界值大 5~16 倍，贴纸粘在光标上时会明显来回振荡。
+export const FOLLOW_DAMP = 0.62;      // √D≈0.787，约 19 帧收敛
+export const FOLLOW_K = 0.073;        // ≈ (1-√0.62)²/0.62
+export const HELD_PEEL_DAMP = 0.6;    // √D≈0.775，约 18 帧
+export const HELD_PEEL_K = 0.085;     // ≈ (1-√0.6)²/0.6
+export const LIFT_DAMP = 0.65;        // √D≈0.806，约 21 帧
+export const LIFT_K = 0.058;          // ≈ (1-√0.65)²/0.65
+
+// tilt 直接由横向速度导出，速度一振荡倾斜就跟着甩。跟随改为不过冲后速度
+// 单调衰减，增益也要一起调小，否则常规移动就把倾斜顶到上限、看着仍在抖
+export const TILT_GAIN = 0.014;
 export const MAX_TILT = (14 * Math.PI) / 180;
-export const LIFT_K = 0.15;
-export const LIFT_DAMP = 0.75;
+
+// placing（点击贴下）是一次性收尾动作，保留原本略带过冲的手感
 export const PLACE_K = 0.2;
 export const PLACE_DAMP = 0.7;
 export const TILT_RETURN = 0.2;
@@ -90,8 +103,8 @@ export class StickerMachine {
   }
 
   _stepHeld() {
-    // 位置：欠阻尼弹簧追光标。特征值是模为 sqrt(FOLLOW_DAMP) 的复数，会带一点
-    // 过冲再收敛——这个过冲加滞后就是摆动感/惯性感的来源，是故意的，不是没调好
+    // 位置：临界阻尼弹簧追光标，不过冲。惯性感来自它本身的滞后（约 19 帧收敛），
+    // 而不是来回振荡——振荡在贴纸粘手时读起来就是"抖"
     const targetX = this.cursor[0] + this.grabOffset[0];
     const targetY = this.cursor[1] + this.grabOffset[1];
     this.posVel[0] = (this.posVel[0] + (targetX - this.pos[0]) * FOLLOW_K) * FOLLOW_DAMP;
@@ -101,7 +114,7 @@ export class StickerMachine {
 
     // 卷边：收到一个固定的微卷量，不抹平
     const targetPeel = this._maxPeel() * HELD_CURL;
-    this.peelVel = (this.peelVel + (targetPeel - this.peel) * PLACE_K) * PLACE_DAMP;
+    this.peelVel = (this.peelVel + (targetPeel - this.peel) * HELD_PEEL_K) * HELD_PEEL_DAMP;
     this.peel += this.peelVel;
 
     // 倾斜由横向速度导出：往右甩则贴纸尾巴向左摆
