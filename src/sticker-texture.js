@@ -40,3 +40,19 @@ export function drawSticker(canvas, w, h, dpr) {
 
   return canvas;
 }
+
+/**
+ * 贴纸图片素材路径。为 null 时使用 canvas 绘制的 Lingkan 贴纸。
+ * 换成异形 die-cut 照片贴纸时，把这里改成 PNG 路径即可（需带 alpha 通道）。
+ */
+export const STICKER_IMAGE_URL = null;
+
+/** 加载贴纸图片。失败时 reject，由调用方回退到 canvas 贴纸。 */
+export function loadStickerImage(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error(`贴纸图片加载失败: ${url}`));
+    img.src = url;
+  });
+}

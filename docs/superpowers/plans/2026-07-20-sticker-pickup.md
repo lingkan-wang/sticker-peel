@@ -277,7 +277,10 @@ export class StickerMachine {
   _detach() {
     this.mode = 'held';
     this.awaitingRelease = true;
-    this.grabOffset = [this.pos[0] - this.cursor[0], this.pos[1] - this.cursor[1]];
+    // 抓取点就是最初按下的那个点：捏住贴纸哪里, 哪里就该待在指尖下。
+    // 若改用脱落瞬间的 pos - cursor, 由于脱落必然发生在拖出 75% 跨度之后,
+    // 贴纸会被永久吊在离光标三四百像素处, 稍一移动就飞出视口
+    this.grabOffset = [-this.peelState.anchor[0], -this.peelState.anchor[1]];
     this.posVel = [0, 0];
     this.peelVel = 0;
     this.liftVel = 0;

@@ -1,10 +1,11 @@
 import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
 import { VERTEX_SHADER, FRAGMENT_SHADER } from './shaders.js';
-import { drawSticker } from './sticker-texture.js';
-import { PeelState } from './peel-state.js';
+import { drawSticker, STICKER_IMAGE_URL, loadStickerImage } from './sticker-texture.js';
+import { StickerMachine } from './sticker-machine.js';
 
-const STICKER_W = 420;
-const STICKER_H = 260;
+const STICKER_LONG = 420;        // 贴纸长边固定，短边按素材宽高比推导
+let STICKER_W = 420;
+let STICKER_H = 260;
 const CURL_RADIUS = 26;
 const SEGMENTS = 160;
 
@@ -57,6 +58,30 @@ export function createScene(container) {
   shadow.position.set(0, -STICKER_H * 0.06, -1);
   scene.add(shadow);
 
+  /** 用图片素材替换贴纸贴图，并按其宽高比重建几何 */
+  function applyStickerImage(img) {
+    const ratio = img.naturalWidth / img.naturalHeight;
+    if (ratio >= 1) {
+      STICKER_W = STICKER_LONG;
+      STICKER_H = STICKER_LONG / ratio;
+    } else {
+      STICKER_H = STICKER_LONG;
+      STICKER_W = STICKER_LONG * ratio;
+    }
+
+    const nextTexture = new THREE.Texture(img);
+    nextTexture.colorSpace = THREE.SRGBColorSpace;
+    nextTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    nextTexture.needsUpdate = true;
+    uniforms.uTex.value.dispose();
+    uniforms.uTex.value = nextTexture;
+
+    sticker.geometry.dispose();
+    sticker.geometry = new THREE.PlaneGeometry(STICKER_W, STICKER_H, SEGMENTS, SEGMENTS);
+    shadow.geometry.dispose();
+    shadow.geometry = new THREE.PlaneGeometry(STICKER_W * 1.25, STICKER_H * 1.6);
+  }
+
   const geometry = new THREE.PlaneGeometry(STICKER_W, STICKER_H, SEGMENTS, SEGMENTS);
   const material = new THREE.ShaderMaterial({
     vertexShader: VERTEX_SHADER,
@@ -73,18 +98,28 @@ export function createScene(container) {
     return (Math.abs(dx) * STICKER_W + Math.abs(dy) * STICKER_H) / 2;
   }
 
-  function setPeel(dir, peel) {
+  function setSticker(pos, dir, peel, tilt, lift) {
     uniforms.uDir.value.set(dir[0], dir[1]);
     const span = maxProjection(dir[0], dir[1]);
     uniforms.uLine.value = -span + peel;
+
+    sticker.position.set(pos[0], pos[1], 0);
+    sticker.rotation.z = tilt;
 
     // 贴纸被卷起后接触面变小：阴影同步收缩、变淡
     // 释放弹簧欠阻尼，peel 会短暂冲到负值；下限也要夹住，否则贴纸已经贴平了
     // 阴影还在按负 progress 反向变亮变大
     const progress = Math.min(Math.max(peel / (span * 2), 0), 1);
-    shadowMaterial.opacity = 0.18 - progress * 0.12;
-    const scale = 1 - progress * 0.25;
-    shadow.scale.set(scale, scale, 1);
+    const curlScale = 1 - progress * 0.25;
+    // 抬离桌面：影子变大、变淡，并朝倾斜的反方向偏移
+    const liftScale = curlScale * (1 + lift * 0.35);
+    shadowMaterial.opacity = (0.18 - progress * 0.12) * (1 - lift * 0.45);
+    shadow.scale.set(liftScale, liftScale, 1);
+    shadow.position.set(
+      pos[0] - tilt * 90 * lift,
+      pos[1] - STICKER_H * 0.06 - lift * 18,
+      -1
+    );
   }
 
   function resize() {
@@ -106,9 +141,9 @@ export function createScene(container) {
   }
 
   function dispose() {
-    geometry.dispose();
+    sticker.geometry.dispose();
     material.dispose();
-    texture.dispose();
+    uniforms.uTex.value.dispose();
     shadow.geometry.dispose();
     shadowMaterial.dispose();
     shadowTexture.dispose();
@@ -121,11 +156,12 @@ export function createScene(container) {
   resize();
 
   return {
-    setPeel,
+    setSticker,
     resize,
     render,
     dispose,
     maxProjection,
+    applyStickerImage,
   };
 }
 
@@ -135,12 +171,13 @@ export function createScene(container) {
  */
 export function createStickerPeel(container) {
   const scene = createScene(container);
-  const state = new PeelState(scene.maxProjection(1, 0) * 2);
+  const machine = new StickerMachine(scene.maxProjection, [0, 0]);
   let frame = 0;
   let resizeFrame = 0;
   // 拖拽期间只认第一根手指的 pointerId，避免第二根手指落下时把 anchor 重置，
   // 或两指其中一个先抬起就把还按着的那个手指的后续 move 吞掉
   let activePointerId = null;
+  let destroyed = false;
 
   /** 屏幕坐标 → 贴纸局部坐标（原点居中，y 轴向上） */
   function toLocal(event) {
@@ -152,12 +189,11 @@ export function createStickerPeel(container) {
   }
 
   function tick() {
-    state.step();
-    // maxPeel 依赖当前方向，每帧跟着方向一起更新
-    state.setMaxPeel(scene.maxProjection(state.dir[0], state.dir[1]) * 2);
-    scene.setPeel(state.dir, state.peel);
+    machine.step();
+    scene.setSticker(machine.pos, machine.dir, machine.peel, machine.tilt, machine.lift);
     scene.render();
-    frame = state.idle ? 0 : requestAnimationFrame(tick);
+    container.classList.toggle('is-holding', machine.mode === 'held');
+    frame = machine.idle ? 0 : requestAnimationFrame(tick);
   }
 
   function wake() {
@@ -165,29 +201,35 @@ export function createStickerPeel(container) {
   }
 
   function onPointerDown(event) {
-    if (activePointerId !== null) return; // 已经有一根手指在拖了，忽略其余的
+    if (activePointerId !== null) return; // 已经有一根手指在操作了，忽略其余的
     activePointerId = event.pointerId;
     const [x, y] = toLocal(event);
-    state.down(x, y);
+    machine.down(x, y);
     container.classList.add('is-dragging');
     container.setPointerCapture?.(event.pointerId);
     wake();
   }
 
   function onPointerMove(event) {
-    if (!state.pressed || event.pointerId !== activePointerId) return;
+    // held 期间没有按住的手指（activePointerId 为 null），但贴纸要跟着光标跑，
+    // 所以只在这一个模式下放宽 pointerId 校验。其余模式（尤其是松手后仍在回弹的
+    // peeling）必须继续只认发起拖拽的那根手指，否则第二根手指的移动会串进来，
+    // 按第一根手指的锚点改写撕开量
+    if (machine.mode !== 'held' && event.pointerId !== activePointerId) return;
     const [x, y] = toLocal(event);
-    state.move(x, y);
+    machine.move(x, y);
     wake();
   }
 
   function onPointerUp(event) {
-    if (!state.pressed || event.pointerId !== activePointerId) return;
-    state.up();
+    if (event.pointerId !== activePointerId) return;
+    machine.up();
     activePointerId = null;
     container.classList.remove('is-dragging');
-    container.releasePointerCapture?.(event.pointerId);
+    // wake() 必须先于 releasePointerCapture：触屏上指针已消失时 release 可能抛
+    // NotFoundError，若排在前面会中断本函数，漏掉 wake() 导致 rAF 循环没能重新起来
     wake();
+    container.releasePointerCapture?.(event.pointerId);
   }
 
   function scheduleResize() {
@@ -222,8 +264,6 @@ export function createStickerPeel(container) {
   window.addEventListener('pointercancel', onPointerUp);
   window.addEventListener('resize', onResize);
 
-  let destroyed = false;
-
   function destroy() {
     if (destroyed) return; // 允许重复调用：真正 unload 和某次显式调用都可能触发
     destroyed = true;
@@ -243,7 +283,20 @@ export function createStickerPeel(container) {
 
   window.addEventListener('pagehide', onPageHide);
 
-  scene.setPeel(state.dir, 0);
+  if (STICKER_IMAGE_URL) {
+    loadStickerImage(STICKER_IMAGE_URL).then(
+      (img) => {
+        if (destroyed) return;   // 加载期间页面可能已经被销毁
+        scene.applyStickerImage(img);
+        wake();
+      },
+      (err) => {
+        console.warn(err.message, '—— 回退到 canvas 贴纸');
+      }
+    );
+  }
+
+  scene.setSticker(machine.pos, machine.dir, 0, 0, 0);
   scene.render();
 
   return { destroy };
