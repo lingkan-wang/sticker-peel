@@ -31,6 +31,32 @@ export function createScene(container) {
     uTex: { value: texture },
   };
 
+  // 软阴影：一张径向渐变贴图，随撕开进度收缩变淡
+  const shadowCanvas = document.createElement('canvas');
+  shadowCanvas.width = 256;
+  shadowCanvas.height = 256;
+  const sctx = shadowCanvas.getContext('2d');
+  const grad = sctx.createRadialGradient(128, 128, 0, 128, 128, 128);
+  grad.addColorStop(0, 'rgba(0,0,0,1)');
+  grad.addColorStop(0.55, 'rgba(0,0,0,0.55)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  sctx.fillStyle = grad;
+  sctx.fillRect(0, 0, 256, 256);
+
+  const shadowTexture = new THREE.CanvasTexture(shadowCanvas);
+  const shadowMaterial = new THREE.MeshBasicMaterial({
+    map: shadowTexture,
+    transparent: true,
+    depthWrite: false,
+    opacity: 0.18,
+  });
+  const shadow = new THREE.Mesh(
+    new THREE.PlaneGeometry(STICKER_W * 1.25, STICKER_H * 1.6),
+    shadowMaterial
+  );
+  shadow.position.set(0, -STICKER_H * 0.06, -1);
+  scene.add(shadow);
+
   const geometry = new THREE.PlaneGeometry(STICKER_W, STICKER_H, SEGMENTS, SEGMENTS);
   const material = new THREE.ShaderMaterial({
     vertexShader: VERTEX_SHADER,
@@ -49,7 +75,14 @@ export function createScene(container) {
 
   function setPeel(dir, peel) {
     uniforms.uDir.value.set(dir[0], dir[1]);
-    uniforms.uLine.value = -maxProjection(dir[0], dir[1]) + peel;
+    const span = maxProjection(dir[0], dir[1]);
+    uniforms.uLine.value = -span + peel;
+
+    // 贴纸被卷起后接触面变小：阴影同步收缩、变淡
+    const progress = Math.min(peel / (span * 2), 1);
+    shadowMaterial.opacity = 0.18 - progress * 0.12;
+    const scale = 1 - progress * 0.25;
+    shadow.scale.set(scale, scale, 1);
   }
 
   function resize() {
@@ -71,6 +104,9 @@ export function createScene(container) {
     geometry.dispose();
     material.dispose();
     texture.dispose();
+    shadow.geometry.dispose();
+    shadowMaterial.dispose();
+    shadowTexture.dispose();
     renderer.dispose();
     if (renderer.domElement.parentNode) {
       renderer.domElement.parentNode.removeChild(renderer.domElement);
