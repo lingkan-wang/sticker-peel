@@ -26,6 +26,9 @@ export const PLACE_DAMP = 0.7;
 export const TILT_RETURN = 0.2;
 export const EPS_M = 0.001;
 
+// 边缘带宽度占贴纸短边的比例。带内按下 = 撕，带内以外 = 整张拖走
+export const EDGE_BAND_RATIO = 0.22;
+
 /**
  * 贴纸模式机。只做数学，不碰 DOM 也不碰 three.js。
  * 坐标是画布局部坐标：原点在画布中心，y 轴向上，单位 CSS 像素。
@@ -57,6 +60,9 @@ export class StickerMachine {
     this.posVel = [0, 0];
     this.peelVel = 0;
     this.liftVel = 0;
+
+    // dragging 期间光标相对贴纸中心的固定偏移
+    this.dragAnchor = [0, 0];
   }
 
   /** 当前方向下的撕开量上限 */
@@ -64,9 +70,37 @@ export class StickerMachine {
     return this.maxProjectionFor(this.dir[0], this.dir[1]) * 2;
   }
 
+  /**
+   * 贴纸半跨度 [hx, hy]。从 maxProjectionFor 反推而不另存一份：
+   * maxProjectionFor 的定义是 (|dx|·W + |dy|·H)/2，所以 (1,0) 恰为 W/2、(0,1) 恰为 H/2。
+   * 换贴图后场景会重算尺寸，这样命中区域自动跟着走，不会残留旧尺寸
+   */
+  _halfExtent() {
+    return [this.maxProjectionFor(1, 0), this.maxProjectionFor(0, 1)];
+  }
+
+  /** 画布坐标落在贴纸的哪个区域 */
+  hitZone(x, y) {
+    const [hx, hy] = this._halfExtent();
+    const lx = Math.abs(x - this.pos[0]);
+    const ly = Math.abs(y - this.pos[1]);
+    if (lx > hx || ly > hy) return 'outside';
+    const band = Math.min(hx * 2, hy * 2) * EDGE_BAND_RATIO;
+    return Math.min(hx - lx, hy - ly) <= band ? 'edge' : 'center';
+  }
+
   down(x, y) {
     this.cursor = [x, y];
     if (this.mode === 'attached') {
+      const zone = this.hitZone(x, y);
+      // 贴纸外按下什么都不做：既是正确的命中行为，也堵住了"在空白处起手
+      // 导致抓取点不受贴纸尺寸约束"这条路
+      if (zone === 'outside') return;
+      if (zone === 'center') {
+        this.mode = 'dragging';
+        this.dragAnchor = [x - this.pos[0], y - this.pos[1]];
+        return;
+      }
       this.mode = 'peeling';
       // 这个减法是有实际效果的：算出来的贴纸局部坐标会被存进 PeelState.anchor，
       // 而 _detach() 正是靠 anchor 算 grabOffset。删掉它 anchor 会变成按下点的绝对坐标，
@@ -78,7 +112,7 @@ export class StickerMachine {
     if (this.mode === 'held' && !this.awaitingRelease) {
       this._beginPlacing();
     }
-    // peeling / placing：忽略，避免中途重入产生中间态
+    // peeling / dragging / placing：忽略，避免中途重入产生中间态
   }
 
   move(x, y) {
@@ -93,6 +127,11 @@ export class StickerMachine {
       this.peelState.up();
     } else if (this.mode === 'held') {
       this.awaitingRelease = false;
+    } else if (this.mode === 'dragging') {
+      // 补一次跟随：最后一次 move 可能落在本轮 rAF 之后，不补的话贴纸会停在
+      // 距落点一帧位移的地方，而 attached 立刻 idle、循环停住再也不会补画
+      this._stepDragging();
+      this.mode = 'attached';
     }
   }
 
@@ -100,6 +139,13 @@ export class StickerMachine {
     if (this.mode === 'peeling') this._stepPeeling();
     else if (this.mode === 'held') this._stepHeld();
     else if (this.mode === 'placing') this._stepPlacing();
+    else if (this.mode === 'dragging') this._stepDragging();
+  }
+
+  _stepDragging() {
+    // 1:1 跟随，不加弹簧。拖动要跟手；滞后感是 held 的事，放这里只会显得飘
+    this.pos[0] = this.cursor[0] - this.dragAnchor[0];
+    this.pos[1] = this.cursor[1] - this.dragAnchor[1];
   }
 
   _stepHeld() {
