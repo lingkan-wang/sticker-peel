@@ -1,10 +1,11 @@
 import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
 import { VERTEX_SHADER, FRAGMENT_SHADER } from './shaders.js';
-import { drawSticker } from './sticker-texture.js';
+import { drawSticker, STICKER_IMAGE_URL, loadStickerImage } from './sticker-texture.js';
 import { StickerMachine } from './sticker-machine.js';
 
-const STICKER_W = 420;
-const STICKER_H = 260;
+const STICKER_LONG = 420;        // 贴纸长边固定，短边按素材宽高比推导
+let STICKER_W = 420;
+let STICKER_H = 260;
 const CURL_RADIUS = 26;
 const SEGMENTS = 160;
 
@@ -56,6 +57,30 @@ export function createScene(container) {
   );
   shadow.position.set(0, -STICKER_H * 0.06, -1);
   scene.add(shadow);
+
+  /** 用图片素材替换贴纸贴图，并按其宽高比重建几何 */
+  function applyStickerImage(img) {
+    const ratio = img.naturalWidth / img.naturalHeight;
+    if (ratio >= 1) {
+      STICKER_W = STICKER_LONG;
+      STICKER_H = STICKER_LONG / ratio;
+    } else {
+      STICKER_H = STICKER_LONG;
+      STICKER_W = STICKER_LONG * ratio;
+    }
+
+    const nextTexture = new THREE.Texture(img);
+    nextTexture.colorSpace = THREE.SRGBColorSpace;
+    nextTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    nextTexture.needsUpdate = true;
+    uniforms.uTex.value.dispose();
+    uniforms.uTex.value = nextTexture;
+
+    sticker.geometry.dispose();
+    sticker.geometry = new THREE.PlaneGeometry(STICKER_W, STICKER_H, SEGMENTS, SEGMENTS);
+    shadow.geometry.dispose();
+    shadow.geometry = new THREE.PlaneGeometry(STICKER_W * 1.25, STICKER_H * 1.6);
+  }
 
   const geometry = new THREE.PlaneGeometry(STICKER_W, STICKER_H, SEGMENTS, SEGMENTS);
   const material = new THREE.ShaderMaterial({
@@ -116,9 +141,9 @@ export function createScene(container) {
   }
 
   function dispose() {
-    geometry.dispose();
+    sticker.geometry.dispose();
     material.dispose();
-    texture.dispose();
+    uniforms.uTex.value.dispose();
     shadow.geometry.dispose();
     shadowMaterial.dispose();
     shadowTexture.dispose();
@@ -136,6 +161,7 @@ export function createScene(container) {
     render,
     dispose,
     maxProjection,
+    applyStickerImage,
   };
 }
 
@@ -151,6 +177,7 @@ export function createStickerPeel(container) {
   // 拖拽期间只认第一根手指的 pointerId，避免第二根手指落下时把 anchor 重置，
   // 或两指其中一个先抬起就把还按着的那个手指的后续 move 吞掉
   let activePointerId = null;
+  let destroyed = false;
 
   /** 屏幕坐标 → 贴纸局部坐标（原点居中，y 轴向上） */
   function toLocal(event) {
@@ -235,8 +262,6 @@ export function createStickerPeel(container) {
   window.addEventListener('pointercancel', onPointerUp);
   window.addEventListener('resize', onResize);
 
-  let destroyed = false;
-
   function destroy() {
     if (destroyed) return; // 允许重复调用：真正 unload 和某次显式调用都可能触发
     destroyed = true;
@@ -255,6 +280,19 @@ export function createStickerPeel(container) {
   }
 
   window.addEventListener('pagehide', onPageHide);
+
+  if (STICKER_IMAGE_URL) {
+    loadStickerImage(STICKER_IMAGE_URL).then(
+      (img) => {
+        if (destroyed) return;   // 加载期间页面可能已经被销毁
+        scene.applyStickerImage(img);
+        wake();
+      },
+      (err) => {
+        console.warn(err.message, '—— 回退到 canvas 贴纸');
+      }
+    );
+  }
 
   scene.setSticker(machine.pos, machine.dir, 0, 0, 0);
   scene.render();
