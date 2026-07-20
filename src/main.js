@@ -1,7 +1,7 @@
 import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
 import { VERTEX_SHADER, FRAGMENT_SHADER } from './shaders.js';
 import { drawSticker } from './sticker-texture.js';
-import { PeelState } from './peel-state.js';
+import { StickerMachine } from './sticker-machine.js';
 
 const STICKER_W = 420;
 const STICKER_H = 260;
@@ -73,18 +73,28 @@ export function createScene(container) {
     return (Math.abs(dx) * STICKER_W + Math.abs(dy) * STICKER_H) / 2;
   }
 
-  function setPeel(dir, peel) {
+  function setSticker(pos, dir, peel, tilt, lift) {
     uniforms.uDir.value.set(dir[0], dir[1]);
     const span = maxProjection(dir[0], dir[1]);
     uniforms.uLine.value = -span + peel;
+
+    sticker.position.set(pos[0], pos[1], 0);
+    sticker.rotation.z = tilt;
 
     // 贴纸被卷起后接触面变小：阴影同步收缩、变淡
     // 释放弹簧欠阻尼，peel 会短暂冲到负值；下限也要夹住，否则贴纸已经贴平了
     // 阴影还在按负 progress 反向变亮变大
     const progress = Math.min(Math.max(peel / (span * 2), 0), 1);
-    shadowMaterial.opacity = 0.18 - progress * 0.12;
-    const scale = 1 - progress * 0.25;
-    shadow.scale.set(scale, scale, 1);
+    const curlScale = 1 - progress * 0.25;
+    // 抬离桌面：影子变大、变淡，并朝倾斜的反方向偏移
+    const liftScale = curlScale * (1 + lift * 0.35);
+    shadowMaterial.opacity = (0.18 - progress * 0.12) * (1 - lift * 0.45);
+    shadow.scale.set(liftScale, liftScale, 1);
+    shadow.position.set(
+      pos[0] - tilt * 90 * lift,
+      pos[1] - STICKER_H * 0.06 - lift * 18,
+      -1
+    );
   }
 
   function resize() {
@@ -121,7 +131,7 @@ export function createScene(container) {
   resize();
 
   return {
-    setPeel,
+    setSticker,
     resize,
     render,
     dispose,
@@ -135,7 +145,7 @@ export function createScene(container) {
  */
 export function createStickerPeel(container) {
   const scene = createScene(container);
-  const state = new PeelState(scene.maxProjection(1, 0) * 2);
+  const machine = new StickerMachine(scene.maxProjection, [0, 0]);
   let frame = 0;
   let resizeFrame = 0;
   // 拖拽期间只认第一根手指的 pointerId，避免第二根手指落下时把 anchor 重置，
@@ -152,12 +162,11 @@ export function createStickerPeel(container) {
   }
 
   function tick() {
-    state.step();
-    // maxPeel 依赖当前方向，每帧跟着方向一起更新
-    state.setMaxPeel(scene.maxProjection(state.dir[0], state.dir[1]) * 2);
-    scene.setPeel(state.dir, state.peel);
+    machine.step();
+    scene.setSticker(machine.pos, machine.dir, machine.peel, machine.tilt, machine.lift);
     scene.render();
-    frame = state.idle ? 0 : requestAnimationFrame(tick);
+    container.classList.toggle('is-holding', machine.mode === 'held');
+    frame = machine.idle ? 0 : requestAnimationFrame(tick);
   }
 
   function wake() {
@@ -165,25 +174,26 @@ export function createStickerPeel(container) {
   }
 
   function onPointerDown(event) {
-    if (activePointerId !== null) return; // 已经有一根手指在拖了，忽略其余的
+    if (activePointerId !== null) return; // 已经有一根手指在操作了，忽略其余的
     activePointerId = event.pointerId;
     const [x, y] = toLocal(event);
-    state.down(x, y);
+    machine.down(x, y);
     container.classList.add('is-dragging');
     container.setPointerCapture?.(event.pointerId);
     wake();
   }
 
   function onPointerMove(event) {
-    if (!state.pressed || event.pointerId !== activePointerId) return;
+    // held 期间没有按住的手指，但贴纸要跟着光标跑，所以这里不能再要求 pointerId 匹配
+    if (activePointerId !== null && event.pointerId !== activePointerId) return;
     const [x, y] = toLocal(event);
-    state.move(x, y);
+    machine.move(x, y);
     wake();
   }
 
   function onPointerUp(event) {
-    if (!state.pressed || event.pointerId !== activePointerId) return;
-    state.up();
+    if (event.pointerId !== activePointerId) return;
+    machine.up();
     activePointerId = null;
     container.classList.remove('is-dragging');
     container.releasePointerCapture?.(event.pointerId);
@@ -243,7 +253,7 @@ export function createStickerPeel(container) {
 
   window.addEventListener('pagehide', onPageHide);
 
-  scene.setPeel(state.dir, 0);
+  scene.setSticker(machine.pos, machine.dir, 0, 0, 0);
   scene.render();
 
   return { destroy };
