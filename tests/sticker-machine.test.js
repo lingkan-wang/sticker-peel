@@ -78,9 +78,10 @@ describe('StickerMachine 模式迁移', () => {
     // 命中测试上线后，这个偏移必须落在边缘带内（否则会进入 dragging 而不是
     // peeling），所以选 [190,30]：190 距右缘 20px，在 57.2px 的边缘带内。
     // 拖拽距离特意拉到 600（超过一个 W=420 的跨度）：如果 down() 里漏掉了
-    // "- this.pos" 这个坐标转换，PeelState.anchor 会变成按下点的绝对坐标而不是
-    // 贴纸局部坐标，算出的 grabOffset 会是 [-390,-50] 而不是期望的 [-190,-30]，
-    // 所以能被下面的断言区分出来
+    // "- this.pos" 这个坐标转换，PeelState.anchor 会变成按下点的绝对坐标（即
+    // [390,50]）而不是贴纸局部坐标 [190,30]；即便 _detach() 里的 clamp 会把
+    // 超出半跨度(210)的 x 分量夹回 210，算出的 grabOffset 也会是 [-210,-50]
+    // 而不是期望的 [-190,-30]，所以能被下面的断言区分出来
     const pressOffset = [190, 30];
     const press = [origin[0] + pressOffset[0], origin[1] + pressOffset[1]];
     m.down(press[0], press[1]);
@@ -264,8 +265,11 @@ describe('StickerMachine held 跟随', () => {
     const origin = [0, 0];
     const m = make(origin);
     // 按在贴纸中心偏一角的位置，而不是正中央；命中测试上线后还必须落在
-    // 边缘带内才会触发撕开（195 距右缘 15px，在 57.2px 边缘带内）
-    const pressOffset = [195, -40];
+    // 边缘带内才会触发撕开。选上边缘带内的 [40,125]（125 距上缘 5px，在
+    // 57.2px 边缘带内）：换成这个点是为了把下面 dist<halfSpanX 的margin
+    // 从原先 [195,-40] 算出的 ~199<210（约 11px）拉开到 ~131<210（约
+    // 79px），原来的 margin 太薄，接近浮点误差量级，容易假失败
+    const pressOffset = [40, 125];
     const press = [origin[0] + pressOffset[0], origin[1] + pressOffset[1]];
     // 用一个很大的拖拽距离（远超脱落阈值）去放大旧公式的 bug：
     // 旧公式 grabOffset = pos - cursor(脱落瞬间) 会把这段拖拽距离原封不动地
@@ -287,24 +291,65 @@ describe('StickerMachine held 跟随', () => {
 
     // 关键区分点：贴纸中心到光标的距离必须被贴纸自身的半跨度约束住，
     // 不能随拖拽距离（这里是 600px）线性增长。旧公式在这个用例下算出的
-    // grabOffset 长度约 681px，远超半跨度，会让这个断言失败。
+    // grabOffset 长度约 652px，远超半跨度，会让这个断言失败。
     const dist = Math.hypot(m.pos[0] - cursor[0], m.pos[1] - cursor[1]);
     const halfSpanX = proj(1, 0); // 贴纸在 x 方向的半跨度（W/2）
     expect(dist).toBeLessThan(halfSpanX);
   });
 
-  // Fix 1 回归（原：在贴纸范围外按下并脱落，anchor 必须被夹在贴纸半跨度内）
-  // 已在本任务（命中测试）中被结构性取代，故删除：down() 现在对 'outside'
-  // 直接在入口 return，peelState.down() 只会在 hitZone==='edge' 时才被调用，
-  // 而 'edge' 由定义保证 lx<=hx 且 ly<=hy。也就是说 anchor 永远不可能落在
-  // [-hx,hx]x[-hy,hy] 之外，_detach() 里的 clamp 对当前唯一的公开入口
-  // （鼠标/触摸经 down()）已经是恒等操作、测不出区分度。这个失效场景本身
-  // 已被本文件末尾新增的"在贴纸外按下不产生任何反应"覆盖（验证的是更早
-  // 一步的正确行为：外部按下根本不会产生 anchor）。
-  // clamp 仍然是有意义的防御代码——如果撕开期间贴纸尺寸变化（如窗口
-  // resize 导致 maxProjectionFor 返回值变小），按下时的 anchor 在新尺寸下
-  // 可能反过来超出半跨度；但那是一个不同的场景，不属于本任务范围，
-  // 未新增覆盖，留给以后处理 resize-during-drag 时补测。
+  // Fix 1 回归（restore，重写）：_detach() 里的 clamp 不是死代码。它读的
+  // _halfExtent() 直接调用 maxProjectionFor，而 peelState.anchor 是 down()
+  // 那一刻捕获的旧尺寸下的局部坐标。真实场景里 applyStickerImage 会在贴图
+  // 加载完成后重算 W/H，如果这发生在"按下"和"脱落"之间，_halfExtent() 会
+  // 变小而 anchor 不变，clamp 就真的会咬住。这里用一个可变的 proj 闭包
+  // 模拟贴图中途换尺寸，不再依赖已被命中测试堵死的"贴纸外按下"路径。
+  it('Fix 1 回归：撕开期间贴纸尺寸变小（如换贴图重算 W/H），grabOffset 必须夹在新半跨度内', () => {
+    let w = 420;
+    let h = 260;
+    // 与文件顶部的 proj 同构，但 w/h 可变，用来模拟 applyStickerImage 重算尺寸
+    const mutableProj = (dx, dy) => (Math.abs(dx) * w + Math.abs(dy) * h) / 2;
+    const m = new StickerMachine(mutableProj, [0, 0]);
+
+    // 在原始尺寸（W=420,H=260）的边缘带内按下：EDGE_X=205 距右缘 5px，
+    // 在边缘带 57.2px 内，与文件顶部其它用例保持同一命中口径
+    m.down(EDGE_X, 0);
+    expect(m.mode).toBe('peeling');
+    m.move(EDGE_X + 300, 0); // 相对锚点位移 300，target=300 < maxPeel(420)*0.75=315，不会自然越过阈值
+
+    // 走到接近收敛（peel→300，ratio→300/420≈0.714），但还没到 0.75，即"刚脱落之前"
+    for (let i = 0; i < 50; i += 1) m.step();
+    expect(m.mode).toBe('peeling');
+    expect(m.peel / (mutableProj(1, 0) * 2)).toBeLessThan(DETACH_THRESHOLD);
+
+    // 贴图中途换成一张小得多的图，模拟 applyStickerImage 重算后的新尺寸；
+    // _halfExtent()/_maxPeel() 都是活读 mutableProj，所以下一帧起立刻生效
+    w = 40;
+    h = 24;
+
+    // 继续步进直到脱落：新 maxPeel=40，setMaxPeel 会把已经涨到 300 的 peel
+    // 立刻夹到 40，ratio 瞬间到 1.0，通常一步以内就会脱落
+    let guard = 0;
+    while (m.mode !== 'held' && guard < 200) {
+      m.step();
+      guard += 1;
+    }
+    expect(m.mode).toBe('held');
+
+    // 期望值：anchor 是 down() 那一刻算出的贴纸局部坐标 [205,0]（原始尺寸下
+    // 落在边缘带内，本身没有越界），但脱落时读到的半跨度已经变成新尺寸的
+    // [20,12]，必须被 clamp 夹住，而不是原样取负
+    const [hx, hy] = [mutableProj(1, 0), mutableProj(0, 1)];
+    const anchor = [EDGE_X - 0, 0 - 0];
+    const clampFn = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+    const expected = [-clampFn(anchor[0], -hx, hx), -clampFn(anchor[1], -hy, hy)];
+    // 用同一个 clamp 公式算期望值，避免 -0 与 0 在 toEqual 下被判定不相等
+    expect(m.grabOffset).toEqual(expected);
+    // 关键区分点：若把 _detach() 里的 clamp 删掉，grabOffset 会是原始
+    // -anchor = [-205, 0]，与新半跨度夹出来的 [-20, 0]（hx=20,hy=12）不同，
+    // 下面这两个具体数值断言在去掉 clamp 后必然失败
+    expect(m.grabOffset[0]).toBeCloseTo(-20, 6);
+    expect(m.grabOffset[1]).toBeCloseTo(0, 6);
+  });
 });
 
 describe('StickerMachine 贴回与循环', () => {
@@ -448,6 +493,12 @@ describe('StickerMachine 命中测试', () => {
     expect(m.hitZone(210 - BAND + 1, 0)).toBe('edge');
   });
 
+  it('EDGE_BAND_RATIO 常量是 0.22', () => {
+    // 上面的用例只验证"BAND 与 EDGE_BAND_RATIO 内部自洽"，换成任何比例都会
+    // 通过，测不出具体数值被改错；这里像"阈值常量是 0.75"那样直接钉死数值
+    expect(EDGE_BAND_RATIO).toBe(0.22);
+  });
+
   it('区域随贴纸位置移动，不假设贴纸在原点', () => {
     const m = new StickerMachine(proj, [300, -150]);
     expect(m.hitZone(300, -150)).toBe('center');
@@ -517,6 +568,45 @@ describe('StickerMachine 拖动移位', () => {
     expect(m.idle).toBe(false);
     m.down(205, 0);                 // 边缘再按一次，应被忽略
     expect(m.mode).toBe('dragging');
+  });
+
+  it('Fix 2 回归：up() 必须补一次 _stepDragging，不能丢掉最后一次 move', () => {
+    // 上面"松手回到 attached 并停在松手处"和下面"拖到新位置..."两个用例，
+    // 在 up() 之前都已经手动 step() 过一次，天然不会暴露这个 bug；这里特意
+    // 让最后一次 move 落在 up() 之前、且中途不再 step，复现"rAF 帧和松手
+    // 事件谁先到"这类真实时序
+    const m = new StickerMachine(proj, [0, 0]);
+    m.down(0, 0);          // 中心按下，dragAnchor = [0,0]
+    m.step();               // 走一帧，此时 pos 仍是 [0,0]（光标还没挪动）
+    m.move(400, -220);      // 松手前最后一次 move，中途没有再 step
+    m.up();
+    expect(m.mode).toBe('attached');
+    // 关键区分点：不补 _stepDragging 的旧实现下，pos 还停在 up() 之前最后一次
+    // step() 时的值 [0,0]，与 400/-220 相去甚远，下面两个断言必然失败
+    expect(m.pos[0]).toBeCloseTo(400 - m.dragAnchor[0], 6);
+    expect(m.pos[1]).toBeCloseTo(-220 - m.dragAnchor[1], 6);
+    expect(m.pos[0]).toBeCloseTo(400, 6);
+    expect(m.pos[1]).toBeCloseTo(-220, 6);
+  });
+
+  it('Fix 3 回归：贴纸不在原点时，dragAnchor 必须是 (按下点 - pos) 而非按下点本身', () => {
+    // 之前所有拖动用例的贴纸都造在 [0,0]，dragAnchor = x - pos[0] 和裸的 x
+    // 数值上无法区分，测不出漏掉 "- this.pos" 这个坐标转换的 bug；这里换成
+    // 非原点位置，专门钉住这处减法
+    const origin = [300, -150];
+    const m = new StickerMachine(proj, origin);
+    m.down(320, -140);      // 贴纸中心附近按下（偏移 20,10），落在 center 区
+    expect(m.mode).toBe('dragging');
+    m.move(500, 50);
+    m.step();
+    // 正确的 dragAnchor 应为 [320-300, -140-(-150)] = [20, 10]
+    expect(m.dragAnchor).toEqual([20, 10]);
+    expect(m.pos[0]).toBeCloseTo(500 - (320 - origin[0]), 6);
+    expect(m.pos[1]).toBeCloseTo(50 - (-140 - origin[1]), 6);
+    expect(m.pos[0]).toBeCloseTo(480, 6);
+    expect(m.pos[1]).toBeCloseTo(40, 6);
+    // 关键区分点：若 dragAnchor 漏掉 "- this.pos"，会变成裸的按下点 [320,-140]，
+    // 使 pos 算成 [500-320, 50-(-140)] = [180, 190]，与上面 [480,40] 明显不同
   });
 
   it('拖到新位置后可以从新位置的边缘撕开', () => {

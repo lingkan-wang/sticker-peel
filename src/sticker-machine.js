@@ -128,6 +128,9 @@ export class StickerMachine {
     } else if (this.mode === 'held') {
       this.awaitingRelease = false;
     } else if (this.mode === 'dragging') {
+      // 补一次跟随：最后一次 move 可能落在本轮 rAF 之后，不补的话贴纸会停在
+      // 距落点一帧位移的地方，而 attached 立刻 idle、循环停住再也不会补画
+      this._stepDragging();
       this.mode = 'attached';
     }
   }
