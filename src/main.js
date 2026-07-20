@@ -90,6 +90,9 @@ export function createScene(container) {
   function resize() {
     const w = container.clientWidth;
     const h = container.clientHeight;
+    // 容器还没参与布局时会量出 0×0：跳过，避免配出一个退化的空视锥、空 drawbuffer。
+    // 之后 ResizeObserver 量到真实尺寸会再调一次。
+    if (w === 0 || h === 0) return;
     renderer.setSize(w, h);
     camera.left = -w / 2;
     camera.right = w / 2;
@@ -187,8 +190,8 @@ export function createStickerPeel(container) {
     wake();
   }
 
-  function onResize() {
-    // 用 rAF 把一串 resize 事件合并成一次，避免每个事件都重新分配 drawbuffer
+  function scheduleResize() {
+    // 用 rAF 把一串 resize/ResizeObserver 通知合并成一次，避免每次都重新分配 drawbuffer
     if (resizeFrame) return;
     resizeFrame = requestAnimationFrame(() => {
       resizeFrame = 0;
@@ -196,6 +199,16 @@ export function createStickerPeel(container) {
       wake();
     });
   }
+
+  function onResize() {
+    scheduleResize();
+  }
+
+  // container 首次挂载时可能还没参与布局（后台 tab、bfcache 恢复、display:none 切换、
+  // 字体/图片晚到撑开尺寸……），构造时的一次性 resize() 会量到 0×0 且此后再也没有恢复的
+  // 机会——window resize 事件未必会来。改为持续观察 container 本身的尺寸变化。
+  const resizeObserver = new ResizeObserver(scheduleResize);
+  resizeObserver.observe(container);
 
   function onPageHide(event) {
     // bfcache：页面只是被挂起，不是真正卸载，不能在这里 dispose 掉 WebGL 上下文，
@@ -218,6 +231,7 @@ export function createStickerPeel(container) {
     frame = 0;
     if (resizeFrame) cancelAnimationFrame(resizeFrame);
     resizeFrame = 0;
+    resizeObserver.disconnect();
     container.removeEventListener('pointerdown', onPointerDown);
     window.removeEventListener('pointermove', onPointerMove);
     window.removeEventListener('pointerup', onPointerUp);
