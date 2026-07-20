@@ -13,6 +13,36 @@ function settle(state, limit = 600) {
   return frames;
 }
 
+/** 两个单位向量之间的夹角，单位为度 */
+function angleDeg(a, b) {
+  const dot = Math.min(1, Math.max(-1, a[0] * b[0] + a[1] * b[1]));
+  return (Math.acos(dot) * 180) / Math.PI;
+}
+
+/**
+ * 方向先收敛到 startAngleDeg，再骤然把目标方向转 turnDeg 度，
+ * 之后逐帧记录相邻两帧 dir 之间的最大夹角。
+ */
+function maxFrameJump(startAngleDeg, turnDeg) {
+  const s = new PeelState(MAX);
+  const startRad = (startAngleDeg * Math.PI) / 180;
+  s.down(0, 0);
+  s.move(Math.cos(startRad) * 40, Math.sin(startRad) * 40);
+  for (let i = 0; i < 120; i += 1) s.step();
+
+  const targetRad = ((startAngleDeg + turnDeg) * Math.PI) / 180;
+  s.move(Math.cos(targetRad) * 40, Math.sin(targetRad) * 40);
+
+  let maxJump = 0;
+  let prev = s.dir;
+  for (let i = 0; i < 60; i += 1) {
+    s.step();
+    maxJump = Math.max(maxJump, angleDeg(prev, s.dir));
+    prev = s.dir;
+  }
+  return maxJump;
+}
+
 describe('PeelState', () => {
   it('初始状态是贴平且空闲的', () => {
     const s = new PeelState(MAX);
@@ -149,6 +179,32 @@ describe('PeelState', () => {
       s.step();
       expect(Math.hypot(s.dir[0], s.dir[1])).toBeCloseTo(1, 6);
     }
+  });
+
+  it('接近掉头时方向逐帧平滑转动，任何单帧转角都不超过 27.1°（角度插值而非笛卡尔 lerp+归一化）', () => {
+    // LERP_DIR = 0.15，最大可能转角 180°，理论单帧上限 = 180 * 0.15 = 27°
+    for (const turn of [90, 170, 179, 180]) {
+      const jump = maxFrameJump(0, turn);
+      expect(jump).toBeLessThanOrEqual(27.1);
+    }
+  });
+
+  it('setMaxPeel 放宽后 target 能恢复到原始拖动距离，而不是卡在旧的小上限上', () => {
+    const s = new PeelState(MAX);
+    s.down(0, 0);
+    s.move(80, 0);
+    s.step();
+    expect(s.rawDistance).toBeCloseTo(80, 6);
+
+    // 方向转到短轴，maxPeel 骤降，target 被临时夹住
+    s.setMaxPeel(10);
+    s.step();
+    expect(s.target).toBeLessThanOrEqual(10 + EPS_TOLERANCE);
+
+    // 方向转回长轴，maxPeel 恢复，target 应该跟着恢复到原始拖动距离，而不是卡在 10
+    s.setMaxPeel(200);
+    s.step();
+    expect(s.target).toBeCloseTo(80, 1);
   });
 });
 

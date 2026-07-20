@@ -3,6 +3,7 @@ export const LERP_PEEL = 0.25;
 export const SPRING_K = 0.12;
 export const SPRING_DAMP = 0.75;
 export const EPS = 0.001;
+const TAU = Math.PI * 2;
 
 /**
  * 撕开状态机。只做数学，不碰 DOM 也不碰 three.js。
@@ -12,14 +13,12 @@ export class PeelState {
   constructor(maxPeel) {
     this.maxPeel = maxPeel;
     this.dir = [1, 0];
-    // 插值用的原始（未重新归一化）向量：dir 每帧都会被归一化为单位向量对外暴露，
-    // 若拿归一化后的 dir 当下一帧插值的起点，方向与目标恰好反向（180°）时衰减信息
-    // 会在归一化时丢失，导致 lerp 永远收敛回原方向、卡死不动。这里单独维护一份
-    // 不归一化的向量承接跨帧的插值进度，只在算 dir 时才归一化。
-    this._dirRaw = [1, 0];
     this.targetDir = [1, 0];
     this.peel = 0;
     this.target = 0;
+    // 按下后指针相对锚点的真实（未夹住）位移长度；setMaxPeel 变化时用它重新推导 target，
+    // 避免 target 卡死在方向旋转前的旧上限上
+    this.rawDistance = 0;
     this.velocity = 0;
     this.pressed = false;
     this.anchor = [0, 0];
@@ -27,7 +26,7 @@ export class PeelState {
 
   setMaxPeel(maxPeel) {
     this.maxPeel = maxPeel;
-    this.target = Math.min(this.target, maxPeel);
+    this.target = this.pressed ? Math.min(this.rawDistance, maxPeel) : 0;
     this.peel = Math.min(this.peel, maxPeel);
   }
 
@@ -35,6 +34,7 @@ export class PeelState {
     this.pressed = true;
     this.anchor = [x, y];
     this.target = 0;
+    this.rawDistance = 0;
     this.velocity = 0;
   }
 
@@ -45,6 +45,7 @@ export class PeelState {
     const len = Math.hypot(dx, dy);
     // 位移过小时方向无意义，保留上一帧方向，避免 0/0 出 NaN
     if (len > EPS) this.targetDir = [dx / len, dy / len];
+    this.rawDistance = len;
     this.target = Math.min(len, this.maxPeel);
   }
 
@@ -54,12 +55,15 @@ export class PeelState {
   }
 
   step() {
-    // 方向平滑：先线性插值再归一化，保证始终是单位向量
-    const nx = this._dirRaw[0] + (this.targetDir[0] - this._dirRaw[0]) * LERP_DIR;
-    const ny = this._dirRaw[1] + (this.targetDir[1] - this._dirRaw[1]) * LERP_DIR;
-    this._dirRaw = [nx, ny];
-    const len = Math.hypot(nx, ny);
-    if (len > EPS) this.dir = [nx / len, ny / len];
+    // 方向平滑：沿最短弧对角度插值，再转回单位向量。直接对笛卡尔向量做 lerp
+    // 再归一化，在接近 180° 反向时插值向量会经过原点附近，归一化会把微小的
+    // 残差放大成近乎瞬间的翻转；对角度插值则每帧的转动量严格有界。
+    const cur = Math.atan2(this.dir[1], this.dir[0]);
+    const tgt = Math.atan2(this.targetDir[1], this.targetDir[0]);
+    let delta = (((tgt - cur) % TAU) + TAU) % TAU; // [0, TAU)
+    if (delta > Math.PI) delta -= TAU;             // (-PI, PI] —— 恰好 180° 时保留 +PI 固定旋向，打破平局
+    const next = cur + delta * LERP_DIR;
+    this.dir = [Math.cos(next), Math.sin(next)];
 
     if (this.pressed) {
       this.peel += (this.target - this.peel) * LERP_PEEL;
