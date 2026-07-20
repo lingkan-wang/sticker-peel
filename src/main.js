@@ -112,6 +112,8 @@ export function createScene(container) {
     // 释放弹簧欠阻尼，peel 会短暂冲到负值；下限也要夹住，否则贴纸已经贴平了
     // 阴影还在按负 progress 反向变亮变大
     const progress = Math.min(Math.max(peel / (span * 2), 0), 1);
+    // 同一欠阻尼释放弹簧也会让 lift 短暂冲到负值，理由同上：这里一并夹住
+    lift = Math.min(Math.max(lift, 0), 1);
     const curlScale = 1 - progress * 0.25;
     // 抬离桌面：影子变大、变淡，并朝倾斜的反方向偏移
     const liftScale = curlScale * (1 + lift * 0.35);
@@ -196,12 +198,23 @@ export function createStickerPeel(container) {
     ];
   }
 
+  let wasAttached = machine.mode === 'attached';
+
   function tick() {
     machine.step();
     scene.setSticker(machine.pos, machine.dir, machine.peel, machine.tilt, machine.lift);
     scene.render();
     container.classList.toggle('is-holding', machine.mode === 'held');
-    if (machine.mode !== 'attached') onHoverLeave();
+    const isAttached = machine.mode === 'attached';
+    if (!isAttached) {
+      onHoverLeave();
+    } else if (!wasAttached) {
+      // 刚回到 attached 这一帧（拖拽结束、放置弹簧收敛完）：hoverZone 在非
+      // attached 期间被 onHoverLeave 清空了，若指针其实还停在贴纸上，光标/
+      // 提示不补这一次会一直卡在 outside，直到下一次 pointermove 才纠正
+      refreshZone();
+    }
+    wasAttached = isAttached;
     frame = machine.idle ? 0 : requestAnimationFrame(tick);
   }
 
@@ -211,8 +224,12 @@ export function createStickerPeel(container) {
 
   function onPointerDown(event) {
     if (activePointerId !== null) return; // 已经有一根手指在操作了，忽略其余的
-    activePointerId = event.pointerId;
     const [x, y] = toLocal(event);
+    // held 时点哪儿都算"贴下去"，只有 attached 下按在贴纸外才该完全无视：
+    // 不先判就占用 activePointerId / 加 is-dragging / 抓指针捕获的话，
+    // 光标会变成握拳态却什么都没抓到，且按住空白处会让整个 demo 失去响应
+    if (machine.mode === 'attached' && machine.hitZone(x, y) === 'outside') return;
+    activePointerId = event.pointerId;
     machine.down(x, y);
     container.classList.add('is-dragging');
     container.setPointerCapture?.(event.pointerId);
@@ -233,12 +250,21 @@ export function createStickerPeel(container) {
 
   /** 悬停位置，仅用于光标形态与引导标签；与拖拽的 pointerId 无关 */
   let hoverZone = 'outside';
+  // 最近一次真实的悬停坐标；指针离开容器时清空。几何（换图换尺寸）或
+  // mode（拖拽结束回到 attached）变化后，靠它重新推导 hoverZone，
+  // 而不是等下一次 pointermove 才纠正过时的 zone
+  let lastHover = null;
 
   function updateZone(x, y) {
     hoverZone = machine.mode === 'attached' ? machine.hitZone(x, y) : 'outside';
     container.classList.toggle('zone-edge', hoverZone === 'edge');
     container.classList.toggle('zone-center', hoverZone === 'center');
     layoutHint();
+  }
+
+  /** 用最近一次悬停坐标针对当前几何/模式重算 zone；指针已离开容器时什么都不做 */
+  function refreshZone() {
+    if (lastHover) updateZone(lastHover[0], lastHover[1]);
   }
 
   /** 标签跟着贴纸走：水平居中于贴纸，垂直放在贴纸上边缘之上 16px */
@@ -255,11 +281,13 @@ export function createStickerPeel(container) {
 
   function onHoverMove(event) {
     const [x, y] = toLocal(event);
+    lastHover = [x, y];
     updateZone(x, y);
   }
 
   function onHoverLeave() {
     hoverZone = 'outside';
+    lastHover = null;
     container.classList.remove('zone-edge', 'zone-center');
     layoutHint();
   }
@@ -326,6 +354,7 @@ export function createStickerPeel(container) {
     window.removeEventListener('resize', onResize);
     window.removeEventListener('pagehide', onPageHide);
     if (hint.parentNode) hint.parentNode.removeChild(hint);
+    container.classList.remove('zone-edge', 'zone-center', 'is-dragging', 'is-holding');
     scene.dispose();
   }
 
@@ -336,9 +365,10 @@ export function createStickerPeel(container) {
       (img) => {
         if (destroyed) return;   // 加载期间页面可能已经被销毁
         scene.applyStickerImage(img);
-        // 贴图换好后贴纸尺寸变了，而 layoutHint 只在 hover 移动时才跑。
-        // 若此刻指针正停在贴纸上、标签已显示，不补这一次重排它会一直飘在旧的半高上
-        layoutHint();
+        // 贴图换好后贴纸尺寸变了：不仅标签要重新摆放，hoverZone 本身也该按新
+        // 几何重判——旧尺寸算出的 'center' 换到新尺寸下可能已经落在贴纸外面，
+        // 光靠 layoutHint() 只会把过时的 zone 摆在新位置上，不会纠正它
+        refreshZone();
         wake();
       },
       (err) => {
