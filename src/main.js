@@ -162,6 +162,7 @@ export function createStickerPeel(container) {
     window.removeEventListener('pointerup', onPointerUp);
     window.removeEventListener('pointercancel', onPointerUp);
     window.removeEventListener('resize', onResize);
+    window.removeEventListener('pagehide', destroy);
     scene.dispose();
   }
 

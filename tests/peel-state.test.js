@@ -121,6 +121,35 @@ describe('PeelState', () => {
     s.step();
     expect(s.peel).toBeLessThanOrEqual(20 + EPS_TOLERANCE);
   });
+
+  it('从默认方向精确反向拖动(180°)时方向能收敛到 -x，而不是卡死在原方向', () => {
+    const s = new PeelState(MAX);
+    s.down(0, 0);
+    s.move(-50, 0);
+    for (let i = 0; i < 200; i += 1) s.step();
+    expect(s.dir[0]).toBeCloseTo(-1, 2);
+    expect(s.dir[1]).toBeCloseTo(0, 2);
+  });
+
+  it('接近但不完全反向(179°附近)拖动时方向同样能收敛到 -x', () => {
+    const s = new PeelState(MAX);
+    s.down(0, 0);
+    s.move(-50, 1);
+    for (let i = 0; i < 200; i += 1) s.step();
+    expect(s.dir[0]).toBeCloseTo(-1, 2);
+  });
+
+  it('方向经历一次反向掉头，全程 dir 始终保持单位向量', () => {
+    const s = new PeelState(MAX);
+    s.down(0, 0);
+    s.move(50, 0);
+    for (let i = 0; i < 120; i += 1) s.step();
+    s.move(-50, 0);
+    for (let i = 0; i < 200; i += 1) {
+      s.step();
+      expect(Math.hypot(s.dir[0], s.dir[1])).toBeCloseTo(1, 6);
+    }
+  });
 });
 
 const EPS_TOLERANCE = 0.5;
