@@ -336,6 +336,9 @@ export function createStickerPeel(container) {
       (img) => {
         if (destroyed) return;   // 加载期间页面可能已经被销毁
         scene.applyStickerImage(img);
+        // 贴图换好后贴纸尺寸变了，而 layoutHint 只在 hover 移动时才跑。
+        // 若此刻指针正停在贴纸上、标签已显示，不补这一次重排它会一直飘在旧的半高上
+        layoutHint();
         wake();
       },
       (err) => {
