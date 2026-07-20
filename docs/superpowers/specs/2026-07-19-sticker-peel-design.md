@@ -37,23 +37,35 @@
 - 材质：`ShaderMaterial({ side: THREE.DoubleSide, transparent: true })`
 
 ### 顶点着色器
-uniforms：`uDir`（vec2，卷曲推进方向）、`uPeel`（float，卷起线沿 `uDir` 推进的距离）、`uRadius`（float，卷曲半径）
+uniforms：`uDir`（vec2，卷曲推进方向）、`uLine`（float，卷起线沿 `uDir` 的投影位置）、`uRadius`（float，卷曲半径）
 
 ```
 s = dot(position.xy, uDir)              // 顶点在卷曲方向上的投影
-t = s - uPeel                           // 相对卷起线的距离
+t = uLine - s                           // 顶点越过卷起线多远（t > 0 即在被卷起的那部分“flap”上）
 if (t > 0.0) {
-  theta = min(t / uRadius, PI * 2.0)    // 卷起角度，封顶防自穿
-  // 沿 uDir 收缩，沿法线抬起
-  offset = uDir * (uRadius * sin(theta) - t)
-  z     = uRadius * (1.0 - cos(theta))
-  pos.xy += offset;  pos.z += z
-  // 卷曲后的法线：绕垂直于 uDir 的轴旋转 theta
-  n = vec3(uDir * -sin(theta), cos(theta))
+  theta = t / uRadius
+  if (theta <= PI) {
+    // 绕位于 uLine 处、轴垂直于 uDir 的圆柱卷起
+    pos.xy += uDir * (t - uRadius * sin(theta))
+    pos.z   = uRadius * (1.0 - cos(theta))
+    // 卷曲后的法线：绕垂直于 uDir 的轴旋转 theta
+    n = vec3(uDir * sin(theta), cos(theta))
+  } else {
+    // 转过 180° 之后曲面已经完全掉头，若继续按同一公式转下去会自己穿自己；
+    // 超出 PI 的部分改为沿卷起时最后的切线方向继续平铺，法线锁定为 (0,0,-1)
+    ext = t - uRadius * PI
+    pos.xy += uDir * (t + ext)
+    pos.z   = 2.0 * uRadius
+    n = vec3(0.0, 0.0, -1.0)
+  }
 }
 ```
 
 `t <= 0` 的部分保持平整、法线为 `(0,0,1)`。法线传给片元着色器做光照。
+
+注意 `n` 里 `uDir` 分量前是 `+sin(theta)` 而不是 `-sin(theta)`：把 `pos.xy`/`pos.z` 对 `theta` 求导得到
+曲面在该点的切线方向，`n = vec3(uDir * sin(theta), cos(theta))` 与这条切线严格垂直（且 `theta = 0`
+处退化为平整贴纸的 `(0,0,1)`）；`-sin(theta)` 那个符号与切线不垂直，卷曲边缘的光照会明显偏离预期。
 
 ### 片元着色器
 - `gl_FrontFacing` 为真 → 采样贴纸 CanvasTexture（正面）

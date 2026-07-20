@@ -79,7 +79,9 @@ export function createScene(container) {
     uniforms.uLine.value = -span + peel;
 
     // 贴纸被卷起后接触面变小：阴影同步收缩、变淡
-    const progress = Math.min(peel / (span * 2), 1);
+    // 释放弹簧欠阻尼，peel 会短暂冲到负值；下限也要夹住，否则贴纸已经贴平了
+    // 阴影还在按负 progress 反向变亮变大
+    const progress = Math.min(Math.max(peel / (span * 2), 0), 1);
     shadowMaterial.opacity = 0.18 - progress * 0.12;
     const scale = 1 - progress * 0.25;
     shadow.scale.set(scale, scale, 1);
@@ -121,7 +123,6 @@ export function createScene(container) {
     render,
     dispose,
     maxProjection,
-    stickerSize: { w: STICKER_W, h: STICKER_H },
   };
 }
 
@@ -133,6 +134,10 @@ export function createStickerPeel(container) {
   const scene = createScene(container);
   const state = new PeelState(scene.maxProjection(1, 0) * 2);
   let frame = 0;
+  let resizeFrame = 0;
+  // 拖拽期间只认第一根手指的 pointerId，避免第二根手指落下时把 anchor 重置，
+  // 或两指其中一个先抬起就把还按着的那个手指的后续 move 吞掉
+  let activePointerId = null;
 
   /** 屏幕坐标 → 贴纸局部坐标（原点居中，y 轴向上） */
   function toLocal(event) {
@@ -157,6 +162,8 @@ export function createStickerPeel(container) {
   }
 
   function onPointerDown(event) {
+    if (activePointerId !== null) return; // 已经有一根手指在拖了，忽略其余的
+    activePointerId = event.pointerId;
     const [x, y] = toLocal(event);
     state.down(x, y);
     container.classList.add('is-dragging');
@@ -165,23 +172,35 @@ export function createStickerPeel(container) {
   }
 
   function onPointerMove(event) {
-    if (!state.pressed) return;
+    if (!state.pressed || event.pointerId !== activePointerId) return;
     const [x, y] = toLocal(event);
     state.move(x, y);
     wake();
   }
 
   function onPointerUp(event) {
-    if (!state.pressed) return;
+    if (!state.pressed || event.pointerId !== activePointerId) return;
     state.up();
+    activePointerId = null;
     container.classList.remove('is-dragging');
     container.releasePointerCapture?.(event.pointerId);
     wake();
   }
 
   function onResize() {
-    scene.resize();
-    wake();
+    // 用 rAF 把一串 resize 事件合并成一次，避免每个事件都重新分配 drawbuffer
+    if (resizeFrame) return;
+    resizeFrame = requestAnimationFrame(() => {
+      resizeFrame = 0;
+      scene.resize();
+      wake();
+    });
+  }
+
+  function onPageHide(event) {
+    // bfcache：页面只是被挂起，不是真正卸载，不能在这里 dispose 掉 WebGL 上下文，
+    // 否则用户点 Back 恢复回来时会看到一个画布已被移除的空白页
+    if (!event.persisted) destroy();
   }
 
   container.addEventListener('pointerdown', onPointerDown);
@@ -190,19 +209,25 @@ export function createStickerPeel(container) {
   window.addEventListener('pointercancel', onPointerUp);
   window.addEventListener('resize', onResize);
 
+  let destroyed = false;
+
   function destroy() {
+    if (destroyed) return; // 允许重复调用：真正 unload 和某次显式调用都可能触发
+    destroyed = true;
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
+    if (resizeFrame) cancelAnimationFrame(resizeFrame);
+    resizeFrame = 0;
     container.removeEventListener('pointerdown', onPointerDown);
     window.removeEventListener('pointermove', onPointerMove);
     window.removeEventListener('pointerup', onPointerUp);
     window.removeEventListener('pointercancel', onPointerUp);
     window.removeEventListener('resize', onResize);
-    window.removeEventListener('pagehide', destroy);
+    window.removeEventListener('pagehide', onPageHide);
     scene.dispose();
   }
 
-  window.addEventListener('pagehide', destroy, { once: true });
+  window.addEventListener('pagehide', onPageHide);
 
   scene.setPeel(state.dir, 0);
   scene.render();
