@@ -55,6 +55,9 @@ export class StickerMachine {
     this.cursor = [x, y];
     if (this.mode === 'attached') {
       this.mode = 'peeling';
+      // 当前 pos 在整段撕开过程中不变，PeelState 内部只用 move/down 点之间的差值，
+      // 所以这个减法此刻算出来会被抵消、观察不到效果；保留它是因为它才是正确的坐标契约——
+      // 一旦 PeelState 改成依赖绝对坐标，或者 pos 在 peeling 期间开始变化，这里不减就会静默出错。
       this.peelState.down(x - this.pos[0], y - this.pos[1]);
       return;
     }
@@ -85,12 +88,16 @@ export class StickerMachine {
   }
 
   _stepPeeling() {
-    this.peelState.setMaxPeel(this._maxPeel());
+    const maxPeel = this._maxPeel();
+    this.peelState.setMaxPeel(maxPeel);
     this.peelState.step();
     this.dir = this.peelState.dir;
     this.peel = this.peelState.peel;
 
-    if (this.peel / this._maxPeel() > DETACH_THRESHOLD) {
+    // 分子分母必须用同一个方向下的上限：this.dir 在 step() 里已经转过了，
+    // 若此处重新调用 _maxPeel() 会拿新方向的上限去除以按旧方向夹过的 peel，
+    // 方向旋转期间阈值会提前或延后触发
+    if (this.peel / maxPeel > DETACH_THRESHOLD) {
       this._detach();
       return;
     }
