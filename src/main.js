@@ -207,10 +207,10 @@ export function createStickerPeel(container) {
     container.classList.toggle('is-holding', machine.mode === 'held');
     const isAttached = machine.mode === 'attached';
     if (!isAttached) {
-      onHoverLeave();
+      clearZone();
     } else if (!wasAttached) {
       // 刚回到 attached 这一帧（拖拽结束、放置弹簧收敛完）：hoverZone 在非
-      // attached 期间被 onHoverLeave 清空了，若指针其实还停在贴纸上，光标/
+      // attached 期间被 clearZone 清空了，若指针其实还停在贴纸上，光标/
       // 提示不补这一次会一直卡在 outside，直到下一次 pointermove 才纠正
       refreshZone();
     }
@@ -285,11 +285,20 @@ export function createStickerPeel(container) {
     updateZone(x, y);
   }
 
-  function onHoverLeave() {
+  /** 只清空可见的 zone 状态（class + 光标提示），不动 lastHover。
+   * tick() 在非 attached 期间每帧都调这个函数压掉视觉状态；如果它也清了
+   * lastHover，等 mode 回到 attached 时 refreshZone() 就没有指针位置可用了——
+   * mode 变化不代表指针离开，只有真正的 pointerleave 才代表指针离开，
+   * 两者必须分开，别再合并回 onHoverLeave */
+  function clearZone() {
     hoverZone = 'outside';
-    lastHover = null;
     container.classList.remove('zone-edge', 'zone-center');
     layoutHint();
+  }
+
+  function onHoverLeave() {
+    clearZone();
+    lastHover = null;
   }
 
   function onPointerUp(event) {
