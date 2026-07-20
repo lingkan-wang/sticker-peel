@@ -15,10 +15,12 @@
   #stage {
     position: fixed;
     inset: 0;
-    cursor: grab;
+    cursor: default;
     touch-action: none;
   }
-  #stage.is-dragging { cursor: grabbing; }
+  #stage.zone-edge { cursor: grab; }
+  #stage.zone-center { cursor: move; }
+  #stage.is-dragging,
   #stage.is-holding { cursor: grabbing; }
   #stage canvas { display: block; }
 </style>

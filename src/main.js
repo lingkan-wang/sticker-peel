@@ -115,7 +115,9 @@ export function createScene(container) {
     const curlScale = 1 - progress * 0.25;
     // 抬离桌面：影子变大、变淡，并朝倾斜的反方向偏移
     const liftScale = curlScale * (1 + lift * 0.35);
-    shadowMaterial.opacity = (0.18 - progress * 0.12) * (1 - lift * 0.45);
+    // 影子完全由"离开桌面的程度"驱动：贴平（attached / dragging）时两项都是 0，
+    // 一点影子都不该有——真贴纸压在纸面上是不投影的
+    shadowMaterial.opacity = progress * 0.1 + lift * 0.16;
     shadow.scale.set(liftScale, liftScale, 1);
     shadow.position.set(
       pos[0] - tilt * 90 * lift,
@@ -195,6 +197,7 @@ export function createStickerPeel(container) {
     scene.setSticker(machine.pos, machine.dir, machine.peel, machine.tilt, machine.lift);
     scene.render();
     container.classList.toggle('is-holding', machine.mode === 'held');
+    if (machine.mode !== 'attached') onHoverLeave();
     frame = machine.idle ? 0 : requestAnimationFrame(tick);
   }
 
@@ -220,7 +223,27 @@ export function createStickerPeel(container) {
     if (machine.mode !== 'held' && event.pointerId !== activePointerId) return;
     const [x, y] = toLocal(event);
     machine.move(x, y);
+    updateZone(x, y);
     wake();
+  }
+
+  /** 悬停位置，仅用于光标形态与引导标签；与拖拽的 pointerId 无关 */
+  let hoverZone = 'outside';
+
+  function updateZone(x, y) {
+    hoverZone = machine.mode === 'attached' ? machine.hitZone(x, y) : 'outside';
+    container.classList.toggle('zone-edge', hoverZone === 'edge');
+    container.classList.toggle('zone-center', hoverZone === 'center');
+  }
+
+  function onHoverMove(event) {
+    const [x, y] = toLocal(event);
+    updateZone(x, y);
+  }
+
+  function onHoverLeave() {
+    hoverZone = 'outside';
+    container.classList.remove('zone-edge', 'zone-center');
   }
 
   function onPointerUp(event) {
@@ -261,6 +284,8 @@ export function createStickerPeel(container) {
   }
 
   container.addEventListener('pointerdown', onPointerDown);
+  container.addEventListener('pointermove', onHoverMove);
+  container.addEventListener('pointerleave', onHoverLeave);
   window.addEventListener('pointermove', onPointerMove);
   window.addEventListener('pointerup', onPointerUp);
   window.addEventListener('pointercancel', onPointerUp);
@@ -275,6 +300,8 @@ export function createStickerPeel(container) {
     resizeFrame = 0;
     resizeObserver.disconnect();
     container.removeEventListener('pointerdown', onPointerDown);
+    container.removeEventListener('pointermove', onHoverMove);
+    container.removeEventListener('pointerleave', onHoverLeave);
     window.removeEventListener('pointermove', onPointerMove);
     window.removeEventListener('pointerup', onPointerUp);
     window.removeEventListener('pointercancel', onPointerUp);
