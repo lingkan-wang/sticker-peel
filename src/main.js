@@ -226,8 +226,10 @@ export function createStickerPeel(container) {
     machine.up();
     activePointerId = null;
     container.classList.remove('is-dragging');
-    container.releasePointerCapture?.(event.pointerId);
+    // wake() 必须先于 releasePointerCapture：触屏上指针已消失时 release 可能抛
+    // NotFoundError，若排在前面会中断本函数，漏掉 wake() 导致 rAF 循环没能重新起来
     wake();
+    container.releasePointerCapture?.(event.pointerId);
   }
 
   function scheduleResize() {
