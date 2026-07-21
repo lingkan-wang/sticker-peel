@@ -10,7 +10,7 @@ const CURL_RADIUS = 26;
 const SEGMENTS = 160;
 // 阴影平面相对贴纸的倍率。必须等比：横纵取不同倍率会把径向渐变拉成一个和贴纸
 // 形状对不上的椭圆，贴纸越接近方形就越明显（之前是 1.25 × 1.6，纵向被抻长）
-const SHADOW_SPREAD = 1.35;
+const SHADOW_SPREAD = 1.11;
 
 export function createScene(container) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
