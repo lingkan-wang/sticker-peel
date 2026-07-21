@@ -380,11 +380,12 @@ export function createStickerPeel(container) {
     // 所以水平位置要夹在画布内；标签比画布还宽时保持居中（两端等量溢出，好过只切一边）。
     const halfLabel = hint.offsetWidth / 2;
     const margin = 4;
-    const center = rect.width / 2 + machine.pos[0];
+    // limit <= 0 表示标签比画布还宽（CSS 的 max-width 兜住之后应该不会发生）。
+    // 这时回落到画布正中而不是贴纸正中：贴纸偏多少标签就跟着偏多少的话，
+    // 一端会被切得更狠，正中至少让两端等量溢出。
     const limit = rect.width / 2 - halfLabel - margin;
-    const left = limit > 0
-      ? rect.width / 2 + Math.min(limit, Math.max(-limit, machine.pos[0]))
-      : center;
+    const offset = limit > 0 ? Math.min(limit, Math.max(-limit, machine.pos[0])) : 0;
+    const left = rect.width / 2 + offset;
     hint.style.left = `${left}px`;
     hint.style.top = `${rect.height / 2 - machine.pos[1] - halfH - 16}px`;
     hint.style.transform = 'translate(-50%, -100%)';

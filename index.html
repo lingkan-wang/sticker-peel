@@ -35,6 +35,9 @@
     background: rgba(28, 26, 24, 0.88);
     color: #fff;
     font: 500 13px/1 -apple-system, system-ui, "Helvetica Neue", sans-serif;
+    /* 必须定宽不折行：标签的水平位置由 JS 读 offsetWidth 夹进画布，
+       一旦允许折行，宽度会随位置变化而变化，夹取读到的是上一帧的宽度，
+       反而把标签推出画布。宽度稳定，夹取才成立 */
     white-space: nowrap;
     opacity: 0;
     transition: opacity 150ms ease;
