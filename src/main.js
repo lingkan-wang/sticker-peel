@@ -3,9 +3,22 @@ import { VERTEX_SHADER, FRAGMENT_SHADER } from './shaders.js';
 import { drawSticker, STICKER_IMAGE_URL, loadStickerImage } from './sticker-texture.js';
 import { StickerMachine } from './sticker-machine.js';
 
-const STICKER_LONG = 420;        // 贴纸长边固定，短边按素材宽高比推导
+const STICKER_LONG_MAX = 420;    // 贴纸长边上限，短边按素材宽高比推导
+let STICKER_LONG = STICKER_LONG_MAX;
 let STICKER_W = 420;
 let STICKER_H = 260;
+
+/**
+ * 按容器算贴纸长边：写死 420 时，嵌进小容器（作品集卡片约 312×428）几乎撑满，
+ * 引导标签和阴影都会被裁掉。取容器短边的 62% 并封顶，小容器自动缩、大容器维持原尺寸。
+ * 容器还没布局时返回上限，由 resize() 在首次量到真实尺寸时重算一次。
+ */
+function stickerLongFor(container) {
+  const w = container.clientWidth;
+  const h = container.clientHeight;
+  if (!w || !h) return STICKER_LONG_MAX;
+  return Math.min(STICKER_LONG_MAX, Math.min(w, h) * 0.62);
+}
 const CURL_RADIUS = 26;
 const SEGMENTS = 160;
 // 阴影平面相对贴纸的倍率。必须等比：横纵取不同倍率会把径向渐变拉成一个和贴纸
@@ -13,6 +26,7 @@ const SEGMENTS = 160;
 const SHADOW_SPREAD = 1.05;
 
 export function createScene(container) {
+  STICKER_LONG = stickerLongFor(container);
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   container.appendChild(renderer.domElement);
@@ -74,16 +88,30 @@ export function createScene(container) {
   shadow.position.set(0, -STICKER_H * 0.06, -1);
   scene.add(shadow);
 
-  /** 用图片素材替换贴纸贴图，并按其宽高比重建几何 */
-  function applyStickerImage(img) {
-    const ratio = img.naturalWidth / img.naturalHeight;
-    if (ratio >= 1) {
+  // 当前贴纸的宽高比，换图后更新；重算长边时要沿用它
+  let stickerRatio = STICKER_W / STICKER_H;
+  // 是否已经按真实容器尺寸定过贴纸大小
+  let sizedAgainstRealContainer = false;
+
+  /** 按当前 STICKER_LONG 与宽高比重算尺寸并重建贴纸/阴影几何 */
+  function rebuildGeometry() {
+    if (stickerRatio >= 1) {
       STICKER_W = STICKER_LONG;
-      STICKER_H = STICKER_LONG / ratio;
+      STICKER_H = STICKER_LONG / stickerRatio;
     } else {
       STICKER_H = STICKER_LONG;
-      STICKER_W = STICKER_LONG * ratio;
+      STICKER_W = STICKER_LONG * stickerRatio;
     }
+    sticker.geometry.dispose();
+    sticker.geometry = new THREE.PlaneGeometry(STICKER_W, STICKER_H, SEGMENTS, SEGMENTS);
+    shadow.geometry.dispose();
+    shadow.geometry = new THREE.PlaneGeometry(STICKER_W * SHADOW_SPREAD, STICKER_H * SHADOW_SPREAD);
+  }
+
+  /** 用图片素材替换贴纸贴图，并按其宽高比重建几何 */
+  function applyStickerImage(img) {
+    stickerRatio = img.naturalWidth / img.naturalHeight;
+    rebuildGeometry();
 
     const nextTexture = new THREE.Texture(img);
     // 刻意不设 colorSpace = SRGBColorSpace：那会让 three.js 在采样时注入 sRGB→线性解码，
@@ -93,11 +121,6 @@ export function createScene(container) {
     nextTexture.needsUpdate = true;
     uniforms.uTex.value.dispose();
     uniforms.uTex.value = nextTexture;
-
-    sticker.geometry.dispose();
-    sticker.geometry = new THREE.PlaneGeometry(STICKER_W, STICKER_H, SEGMENTS, SEGMENTS);
-    shadow.geometry.dispose();
-    shadow.geometry = new THREE.PlaneGeometry(STICKER_W * SHADOW_SPREAD, STICKER_H * SHADOW_SPREAD);
   }
 
   const geometry = new THREE.PlaneGeometry(STICKER_W, STICKER_H, SEGMENTS, SEGMENTS);
@@ -150,6 +173,13 @@ export function createScene(container) {
     // 容器还没参与布局时会量出 0×0：跳过，避免配出一个退化的空视锥、空 drawbuffer。
     // 之后 ResizeObserver 量到真实尺寸会再调一次。
     if (w === 0 || h === 0) return;
+    // 构造时容器常常还是 0×0（后台标签、iframe 懒加载、bfcache 恢复），那一刻算出的
+    // 长边只能退回上限。首次量到真实尺寸时按它重算一次，否则嵌进小卡片仍会撑满
+    if (!sizedAgainstRealContainer) {
+      sizedAgainstRealContainer = true;
+      STICKER_LONG = stickerLongFor(container);
+      rebuildGeometry();
+    }
     renderer.setSize(w, h);
     camera.left = -w / 2;
     camera.right = w / 2;
