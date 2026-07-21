@@ -49,12 +49,25 @@ export function drawSticker(canvas, w, h, dpr) {
  */
 export const STICKER_IMAGE_URL = './assets/sticker-dog.png';
 
-/** 加载贴纸图片。失败时 reject，由调用方回退到 canvas 贴纸。 */
+/**
+ * 加载贴纸图片。失败时 reject，由调用方回退到 canvas 贴纸。
+ *
+ * 返回 { promise, cancel }：`cancel()` 摘掉回调并清空 src 中止下载。
+ * 必须能中止 —— 否则 img 的 onload 闭包持有 resolve、调用方的 .then 闭包持有
+ * 整个 scene，图片下载完成之前已经 dispose 的渲染器和 GPU 对象都还可达；
+ * 光靠一个 `if (destroyed) return` 守卫只是不再使用它们，并没有解除引用。
+ */
 export function loadStickerImage(url) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
+  const img = new Image();
+  const promise = new Promise((resolve, reject) => {
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error(`贴纸图片加载失败: ${url}`));
     img.src = url;
   });
+  function cancel() {
+    img.onload = null;
+    img.onerror = null;
+    img.src = '';           // 中止仍在进行的下载
+  }
+  return { promise, cancel };
 }

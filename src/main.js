@@ -188,6 +188,8 @@ export function createStickerPeel(container) {
   // 或两指其中一个先抬起就把还按着的那个手指的后续 move 吞掉
   let activePointerId = null;
   let destroyed = false;
+  /** 贴图下载的中止函数，destroy 时调用；未发起加载时为 null */
+  let cancelImageLoad = null;
 
   /** 屏幕坐标 → 贴纸局部坐标（原点居中，y 轴向上） */
   function toLocal(event) {
@@ -364,13 +366,28 @@ export function createStickerPeel(container) {
     window.removeEventListener('pagehide', onPageHide);
     if (hint.parentNode) hint.parentNode.removeChild(hint);
     container.classList.remove('zone-edge', 'zone-center', 'is-dragging', 'is-holding');
+    // 中止仍在下载的贴图：不摘掉回调的话，img 的 onload 闭包会一直吊着下面
+    // 这个 .then，而它闭包了整个 scene——渲染器和 GPU 对象在图片下完之前都还可达
+    if (cancelImageLoad) cancelImageLoad();
+    cancelImageLoad = null;
+    // 拖动中途被销毁时指针捕获还挂在容器上，一并释放
+    if (activePointerId !== null) {
+      try {
+        container.releasePointerCapture?.(activePointerId);
+      } catch {
+        // 指针已经消失时 release 会抛，忽略即可
+      }
+      activePointerId = null;
+    }
     scene.dispose();
   }
 
   window.addEventListener('pagehide', onPageHide);
 
   if (STICKER_IMAGE_URL) {
-    loadStickerImage(STICKER_IMAGE_URL).then(
+    const load = loadStickerImage(STICKER_IMAGE_URL);
+    cancelImageLoad = load.cancel;
+    load.promise.then(
       (img) => {
         if (destroyed) return;   // 加载期间页面可能已经被销毁
         scene.applyStickerImage(img);
