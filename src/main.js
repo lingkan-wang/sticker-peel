@@ -10,7 +10,7 @@ const CURL_RADIUS = 26;
 const SEGMENTS = 160;
 // 阴影平面相对贴纸的倍率。必须等比：横纵取不同倍率会把径向渐变拉成一个和贴纸
 // 形状对不上的椭圆，贴纸越接近方形就越明显（之前是 1.25 × 1.6，纵向被抻长）
-const SHADOW_SPREAD = 1.11;
+const SHADOW_SPREAD = 1.05;
 
 export function createScene(container) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -132,10 +132,10 @@ export function createScene(container) {
     lift = Math.min(Math.max(lift, 0), 1);
     const curlScale = 1 - progress * 0.25;
     // 抬离桌面：影子变大、变淡，并朝倾斜的反方向偏移
-    const liftScale = curlScale * (1 + lift * 0.15);
+    const liftScale = curlScale * (1 + lift * 0.08);
     // 影子完全由"离开桌面的程度"驱动：贴平（attached / dragging）时两项都是 0，
     // 一点影子都不该有——真贴纸压在纸面上是不投影的
-    shadowMaterial.opacity = progress * 0.04 + lift * 0.06;
+    shadowMaterial.opacity = progress * 0.025 + lift * 0.035;
     shadow.scale.set(liftScale, liftScale, 1);
     shadow.position.set(
       pos[0] - tilt * 90 * lift,
