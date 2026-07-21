@@ -376,7 +376,16 @@ export function createStickerPeel(container) {
     if (!show) return;
     const rect = container.getBoundingClientRect();
     const halfH = scene.maxProjection(0, 1);
-    hint.style.left = `${rect.width / 2 + machine.pos[0]}px`;
+    // 标签比贴纸宽得多，嵌进小卡片时居中挂在贴纸上方会有一端伸出画布被裁掉，
+    // 所以水平位置要夹在画布内；标签比画布还宽时保持居中（两端等量溢出，好过只切一边）。
+    const halfLabel = hint.offsetWidth / 2;
+    const margin = 4;
+    const center = rect.width / 2 + machine.pos[0];
+    const limit = rect.width / 2 - halfLabel - margin;
+    const left = limit > 0
+      ? rect.width / 2 + Math.min(limit, Math.max(-limit, machine.pos[0]))
+      : center;
+    hint.style.left = `${left}px`;
     hint.style.top = `${rect.height / 2 - machine.pos[1] - halfH - 16}px`;
     hint.style.transform = 'translate(-50%, -100%)';
   }
