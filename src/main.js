@@ -262,6 +262,17 @@ export function createStickerPeel(container) {
     );
   }
 
+  /** 把贴纸中心夹在画布内，留出贴纸自身半跨度，避免被 iframe 边缘裁掉 */
+  function clampPosToCanvas() {
+    const halfW = container.clientWidth / 2;
+    const halfH = container.clientHeight / 2;
+    if (!halfW || !halfH) return;
+    const hx = Math.max(0, halfW - scene.maxProjection(1, 0));
+    const hy = Math.max(0, halfH - scene.maxProjection(0, 1));
+    machine.pos[0] = Math.min(hx, Math.max(-hx, machine.pos[0]));
+    machine.pos[1] = Math.min(hy, Math.max(-hy, machine.pos[1]));
+  }
+
   /** 屏幕坐标 → 贴纸局部坐标（原点居中，y 轴向上） */
   function toLocal(event) {
     const rect = container.getBoundingClientRect();
@@ -275,6 +286,10 @@ export function createStickerPeel(container) {
 
   function tick() {
     machine.step();
+    // 嵌入宿主时画布只有卡片那么大，而"粘手跟随 / 贴到任意处"本身是无边界移动：
+    // 不夹住的话贴纸会走出这块小画布、被 iframe 边缘切成一条直边（看起来像有个方框）。
+    // 大范围移动由卡片拖拽的桥接负责，这里只保证贴纸不越出自己的画布。
+    if (bridgeDrag) clampPosToCanvas();
     scene.setSticker(machine.pos, machine.dir, machine.peel, machine.tilt, machine.lift);
     scene.render();
     container.classList.toggle('is-holding', machine.mode === 'held');
