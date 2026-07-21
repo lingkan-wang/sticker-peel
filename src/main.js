@@ -8,6 +8,9 @@ let STICKER_W = 420;
 let STICKER_H = 260;
 const CURL_RADIUS = 26;
 const SEGMENTS = 160;
+// 阴影平面相对贴纸的倍率。必须等比：横纵取不同倍率会把径向渐变拉成一个和贴纸
+// 形状对不上的椭圆，贴纸越接近方形就越明显（之前是 1.25 × 1.6，纵向被抻长）
+const SHADOW_SPREAD = 1.35;
 
 export function createScene(container) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -32,19 +35,26 @@ export function createScene(container) {
     uTex: { value: texture },
   };
 
-  // 软阴影：一张径向渐变贴图，随撕开进度收缩变淡。
-  // 衰减用高斯而不是几段线性插值——线性的中间停靠点会在半径处留下一圈能看出来的
-  // 折线，边缘显得"硬"；高斯是核心密、尾巴长而轻，再乘 (1-t) 把末端严格压到 0，
-  // 避免贴图边界处还有残余灰度被拉成一条方边
+  // 软阴影：一张径向渐变贴图，随撕开进度收缩变淡
   const shadowCanvas = document.createElement('canvas');
   shadowCanvas.width = 256;
   shadowCanvas.height = 256;
   const sctx = shadowCanvas.getContext('2d');
   const grad = sctx.createRadialGradient(128, 128, 0, 128, 128, 128);
-  const SHADOW_STOPS = 24;
+  // 贴纸覆盖范围内保持满密度，出了边缘再用 smoothstep 收到 0。
+  // 纯高斯不行：从中心到贴纸边缘就已经衰减掉八成，真正露在贴纸外面的那圈几乎没有
+  // 密度可言，影子等于看不见。平台 + S 曲线才既有"接触感"又没有硬边。
+  const SHADOW_STOPS = 32;
+  const SHADOW_CORE = 0.6;    // 满密度半径占贴图半径的比例，约等于贴纸自身边缘
   for (let i = 0; i <= SHADOW_STOPS; i += 1) {
     const t = i / SHADOW_STOPS;
-    const a = Math.exp(-2.6 * t * t) * (1 - t);
+    let a;
+    if (t <= SHADOW_CORE) {
+      a = 1;
+    } else {
+      const u = (t - SHADOW_CORE) / (1 - SHADOW_CORE);
+      a = 1 - u * u * (3 - 2 * u);   // smoothstep，两端一阶导为 0，不会留折线
+    }
     grad.addColorStop(t, `rgba(0,0,0,${a.toFixed(4)})`);
   }
   sctx.fillStyle = grad;
@@ -58,7 +68,7 @@ export function createScene(container) {
     opacity: 0.18,
   });
   const shadow = new THREE.Mesh(
-    new THREE.PlaneGeometry(STICKER_W * 1.25, STICKER_H * 1.6),
+    new THREE.PlaneGeometry(STICKER_W * SHADOW_SPREAD, STICKER_H * SHADOW_SPREAD),
     shadowMaterial
   );
   shadow.position.set(0, -STICKER_H * 0.06, -1);
@@ -87,7 +97,7 @@ export function createScene(container) {
     sticker.geometry.dispose();
     sticker.geometry = new THREE.PlaneGeometry(STICKER_W, STICKER_H, SEGMENTS, SEGMENTS);
     shadow.geometry.dispose();
-    shadow.geometry = new THREE.PlaneGeometry(STICKER_W * 1.25, STICKER_H * 1.6);
+    shadow.geometry = new THREE.PlaneGeometry(STICKER_W * SHADOW_SPREAD, STICKER_H * SHADOW_SPREAD);
   }
 
   const geometry = new THREE.PlaneGeometry(STICKER_W, STICKER_H, SEGMENTS, SEGMENTS);
@@ -122,10 +132,10 @@ export function createScene(container) {
     lift = Math.min(Math.max(lift, 0), 1);
     const curlScale = 1 - progress * 0.25;
     // 抬离桌面：影子变大、变淡，并朝倾斜的反方向偏移
-    const liftScale = curlScale * (1 + lift * 0.35);
+    const liftScale = curlScale * (1 + lift * 0.15);
     // 影子完全由"离开桌面的程度"驱动：贴平（attached / dragging）时两项都是 0，
     // 一点影子都不该有——真贴纸压在纸面上是不投影的
-    shadowMaterial.opacity = progress * 0.06 + lift * 0.1;
+    shadowMaterial.opacity = progress * 0.04 + lift * 0.06;
     shadow.scale.set(liftScale, liftScale, 1);
     shadow.position.set(
       pos[0] - tilt * 90 * lift,
