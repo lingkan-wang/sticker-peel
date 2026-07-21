@@ -32,15 +32,21 @@ export function createScene(container) {
     uTex: { value: texture },
   };
 
-  // 软阴影：一张径向渐变贴图，随撕开进度收缩变淡
+  // 软阴影：一张径向渐变贴图，随撕开进度收缩变淡。
+  // 衰减用高斯而不是几段线性插值——线性的中间停靠点会在半径处留下一圈能看出来的
+  // 折线，边缘显得"硬"；高斯是核心密、尾巴长而轻，再乘 (1-t) 把末端严格压到 0，
+  // 避免贴图边界处还有残余灰度被拉成一条方边
   const shadowCanvas = document.createElement('canvas');
   shadowCanvas.width = 256;
   shadowCanvas.height = 256;
   const sctx = shadowCanvas.getContext('2d');
   const grad = sctx.createRadialGradient(128, 128, 0, 128, 128, 128);
-  grad.addColorStop(0, 'rgba(0,0,0,1)');
-  grad.addColorStop(0.55, 'rgba(0,0,0,0.55)');
-  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  const SHADOW_STOPS = 24;
+  for (let i = 0; i <= SHADOW_STOPS; i += 1) {
+    const t = i / SHADOW_STOPS;
+    const a = Math.exp(-2.6 * t * t) * (1 - t);
+    grad.addColorStop(t, `rgba(0,0,0,${a.toFixed(4)})`);
+  }
   sctx.fillStyle = grad;
   sctx.fillRect(0, 0, 256, 256);
 
@@ -119,7 +125,7 @@ export function createScene(container) {
     const liftScale = curlScale * (1 + lift * 0.35);
     // 影子完全由"离开桌面的程度"驱动：贴平（attached / dragging）时两项都是 0，
     // 一点影子都不该有——真贴纸压在纸面上是不投影的
-    shadowMaterial.opacity = progress * 0.1 + lift * 0.16;
+    shadowMaterial.opacity = progress * 0.06 + lift * 0.1;
     shadow.scale.set(liftScale, liftScale, 1);
     shadow.position.set(
       pos[0] - tilt * 90 * lift,
