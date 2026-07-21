@@ -12,6 +12,9 @@
     overflow: hidden;
     -webkit-font-smoothing: antialiased;
   }
+  /* ?embed 时去掉背景，让贴纸以透明底嵌进宿主页面（渲染器本来就是 alpha: true）。
+     独立打开时保留原本的桌面底色 */
+  body.is-embed { background: transparent; }
   #stage {
     position: fixed;
     inset: 0;
@@ -44,6 +47,12 @@
 </head>
 <body>
   <div id="stage"></div>
+  <script>
+    // 在模块加载前定好，避免嵌入时先闪一下不透明底色
+    if (new URLSearchParams(location.search).has('embed')) {
+      document.body.classList.add('is-embed');
+    }
+  </script>
   <script type="module">
     import { createStickerPeel } from './src/main.js';
     createStickerPeel(document.getElementById('stage'));
