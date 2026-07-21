@@ -229,13 +229,38 @@ export function createStickerPeel(container) {
   hint.textContent = 'Peel me from any corner';
   container.appendChild(hint);
   let frame = 0;
-  let resizeFrame = 0;
   // 拖拽期间只认第一根手指的 pointerId，避免第二根手指落下时把 anchor 重置，
   // 或两指其中一个先抬起就把还按着的那个手指的后续 move 吞掉
   let activePointerId = null;
   let destroyed = false;
   /** 贴图下载的中止函数，destroy 时调用；未发起加载时为 null */
   let cancelImageLoad = null;
+
+  // 嵌入模式（?embed）下，按在贴纸中央改为把拖拽转交宿主页面。
+  // 宿主用 postMessage 的 little-rubbish-drag 协议接管整张卡片的移动，
+  // 这样贴纸能在宿主的大画布里随便挪，而不是被关在 iframe 那一小格里。
+  const bridgeDrag =
+    typeof location !== 'undefined' && new URLSearchParams(location.search).has('embed');
+  const BRIDGE_SLUG = 'sticker-peel';
+  let bridgePointerId = null;
+
+  /** 按宿主约定发一帧拖拽消息；clientX/Y 用 iframe 内坐标，宿主自己加上 frame 偏移 */
+  function postDrag(phase, event) {
+    if (!bridgeDrag || window.parent === window) return;
+    window.parent.postMessage(
+      {
+        channel: 'little-rubbish-drag',
+        slug: BRIDGE_SLUG,
+        phase,
+        pointerId: event.pointerId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        pointerType: event.pointerType,
+        button: event.button,
+      },
+      '*'
+    );
+  }
 
   /** 屏幕坐标 → 贴纸局部坐标（原点居中，y 轴向上） */
   function toLocal(event) {
@@ -277,6 +302,16 @@ export function createStickerPeel(container) {
     // 不先判就占用 activePointerId / 加 is-dragging / 抓指针捕获的话，
     // 光标会变成握拳态却什么都没抓到，且按住空白处会让整个 demo 失去响应
     if (machine.mode === 'attached' && machine.hitZone(x, y) === 'outside') return;
+
+    // 嵌入宿主时，按在贴纸中央不在自己这块小画布里挪，而是把整张卡片交给宿主拖——
+    // 否则贴纸只能在 iframe 那一小格里动，出不了宿主的大画布
+    if (bridgeDrag && machine.mode === 'attached' && machine.hitZone(x, y) === 'center') {
+      bridgePointerId = event.pointerId;
+      postDrag('down', event);
+      container.classList.add('is-dragging');
+      return;
+    }
+
     activePointerId = event.pointerId;
     machine.down(x, y);
     container.classList.add('is-dragging');
@@ -289,6 +324,10 @@ export function createStickerPeel(container) {
     // 所以只在这一个模式下放宽 pointerId 校验。其余模式（尤其是松手后仍在回弹的
     // peeling）必须继续只认发起拖拽的那根手指，否则第二根手指的移动会串进来，
     // 按第一根手指的锚点改写撕开量
+    if (bridgePointerId !== null && event.pointerId === bridgePointerId) {
+      postDrag('move', event);
+      return;
+    }
     if (machine.mode !== 'held' && event.pointerId !== activePointerId) return;
     const [x, y] = toLocal(event);
     machine.move(x, y);
@@ -350,6 +389,12 @@ export function createStickerPeel(container) {
   }
 
   function onPointerUp(event) {
+    if (bridgePointerId !== null && event.pointerId === bridgePointerId) {
+      postDrag('up', event);
+      bridgePointerId = null;
+      container.classList.remove('is-dragging');
+      return;
+    }
     if (event.pointerId !== activePointerId) return;
     machine.up();
     activePointerId = null;
@@ -361,13 +406,13 @@ export function createStickerPeel(container) {
   }
 
   function scheduleResize() {
-    // 用 rAF 把一串 resize/ResizeObserver 通知合并成一次，避免每次都重新分配 drawbuffer
-    if (resizeFrame) return;
-    resizeFrame = requestAnimationFrame(() => {
-      resizeFrame = 0;
-      scene.resize();
-      wake();
-    });
+    // 尺寸必须同步改，不能等 rAF：懒加载的 iframe 文档是 visibilityState:"hidden"，
+    // rAF 会被节流甚至一直不跑，于是 canvas 永远停在 three.js 的 300×150 默认值，
+    // 贴纸超出的部分被画布裁掉，看起来就是贴纸周围有一个方框。
+    // ResizeObserver 本来每帧最多通知一次，同步 setSize 不会抖动；
+    // 真正需要合并的只有重绘，交给 wake() 的 rAF。
+    scene.resize();
+    wake();
   }
 
   function onResize() {
@@ -379,6 +424,23 @@ export function createStickerPeel(container) {
   // 机会——window resize 事件未必会来。改为持续观察 container 本身的尺寸变化。
   const resizeObserver = new ResizeObserver(scheduleResize);
   resizeObserver.observe(container);
+  // ResizeObserver 的回调和 rAF 一样是在渲染步骤里派发的：文档隐藏时（懒加载的
+  // iframe、后台标签）两者一起被节流，观察者可能一次都不触发，于是 canvas 永远停在
+  // three.js 的 300×150 默认值，贴纸超出部分被裁掉，看起来像贴纸周围有个方框。
+  // 定时器不受渲染节流影响（只是被降频），用它兜底重试，量到真实尺寸就停。
+  let sizeProbe = 0;
+  const SIZE_PROBE_DELAYS = [60, 200, 600, 1500, 4000];
+  function probeSize(i) {
+    if (destroyed) return;
+    if (container.clientWidth && container.clientHeight) {
+      scheduleResize();
+      return;                      // 量到了就不再重试
+    }
+    if (i >= SIZE_PROBE_DELAYS.length) return;
+    sizeProbe = setTimeout(() => probeSize(i + 1), SIZE_PROBE_DELAYS[i]);
+  }
+  probeSize(0);
+
 
   function onPageHide(event) {
     // bfcache：页面只是被挂起，不是真正卸载，不能在这里 dispose 掉 WebGL 上下文，
@@ -399,9 +461,9 @@ export function createStickerPeel(container) {
     destroyed = true;
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
-    if (resizeFrame) cancelAnimationFrame(resizeFrame);
-    resizeFrame = 0;
     resizeObserver.disconnect();
+    if (sizeProbe) clearTimeout(sizeProbe);
+    sizeProbe = 0;
     container.removeEventListener('pointerdown', onPointerDown);
     container.removeEventListener('pointermove', onHoverMove);
     container.removeEventListener('pointerleave', onHoverLeave);
@@ -414,6 +476,15 @@ export function createStickerPeel(container) {
     container.classList.remove('zone-edge', 'zone-center', 'is-dragging', 'is-holding');
     // 中止仍在下载的贴图：不摘掉回调的话，img 的 onload 闭包会一直吊着下面
     // 这个 .then，而它闭包了整个 scene——渲染器和 GPU 对象在图片下完之前都还可达
+    if (bridgePointerId !== null) {
+      // 宿主还在按我们发的 down 拖着卡片：不补 up 它会一直停在拖拽态
+      window.parent?.postMessage(
+        { channel: 'little-rubbish-drag', slug: BRIDGE_SLUG, phase: 'up',
+          pointerId: bridgePointerId, clientX: 0, clientY: 0 },
+        '*'
+      );
+      bridgePointerId = null;
+    }
     if (cancelImageLoad) cancelImageLoad();
     cancelImageLoad = null;
     // 拖动中途被销毁时指针捕获还挂在容器上，一并释放
